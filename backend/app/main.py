@@ -101,7 +101,37 @@ def search(q:str=Query(min_length=1,max_length=200),db:Session=Depends(get_db)):
         source=db.get(SourceRegistry,rec.source_id)
         folded=serialized.casefold();needle=q.strip().casefold();position=folded.find(needle)
         source_matches.append({'id':rec.id,'source_name':source.name if source else rec.source_id,'external_id':rec.external_id,'source_url':rec.source_url,'sha256':rec.sha256,'fetched_at':rec.fetched_at,'match_excerpt':serialized[:420] if len(serialized)<=420 else serialized[max(0,position-150):position+270]})
-    return {'query':q,'tenders':tenders,'companies':companies,'organizations':organizations,'suppliers':suppliers,'tender_plans':plans,'source_records':source_matches,'note':'Нэрээр таарсан түүхий эх сурвалж нь зөвхөн хайлтын тааралт. Иргэний/хуулийн этгээдийн адилтгалыг регистр, албан ID болон эх баримтаар баталгаажуулна.'}
+    # Approximate name search is a discovery aid only. Never auto-link or auto-merge entities on name similarity.
+    name_candidates=[]
+    normalized_query=normalized_entity_name(q)
+    if len(normalized_query)>=4:
+        candidates=[]
+        for entity_type, rows, name_key, id_key, identifier_key in [
+            ('company', db.scalars(select(Company).order_by(Company.id.desc()).limit(1500)).all(), 'name', 'id', 'registration'),
+            ('organization', db.scalars(select(Organization).order_by(Organization.id.desc()).limit(1500)).all(), 'name', 'id', 'official_id'),
+            ('supplier', db.scalars(select(TenderSupplier).order_by(TenderSupplier.id.desc()).limit(2000)).all(), 'supplier_name', 'id', 'supplier_register'),
+            ('tender_plan', db.scalars(select(TenderPlan).order_by(TenderPlan.id.desc()).limit(1000)).all(), 'title', 'id', 'tender_code'),
+        ]:
+            for obj in rows:
+                label=getattr(obj,name_key,None) or ''
+                normalized_label=normalized_entity_name(label)
+                if not normalized_label or normalized_label==normalized_query:
+                    continue
+                # Blend whole-string similarity with token overlap so short name fragments still surface.
+                similarity=SequenceMatcher(None,normalized_query,normalized_label).ratio()
+                q_tokens=set(normalized_query.split()); n_tokens=set(normalized_label.split())
+                overlap=len(q_tokens & n_tokens)/max(1,len(q_tokens))
+                score=max(similarity,overlap*0.82)
+                if score>=0.62:
+                    candidates.append({'entity_type':entity_type,'id':getattr(obj,id_key),'name':label,'identifier':getattr(obj,identifier_key,None),'similarity':round(min(score,1.0),3),'match_kind':'approximate_name_only','investigation_allowed':entity_type in ('company','organization','supplier','tender_plan')})
+        candidates.sort(key=lambda x:(x['similarity'],bool(x['identifier'])),reverse=True)
+        seen=set()
+        for candidate in candidates:
+            key=(candidate['entity_type'],candidate['id'])
+            if key in seen: continue
+            seen.add(key); name_candidates.append(candidate)
+            if len(name_candidates)>=25: break
+    return {'query':q,'tenders':tenders,'companies':companies,'organizations':organizations,'suppliers':suppliers,'tender_plans':plans,'source_records':source_matches,'name_candidates':name_candidates,'note':'Нэрээр таарсан түүхий эх сурвалж болон ойролцоо нэрийн үр дүн нь зөвхөн хайлтын сэжүүр. Нэрийн төстэй байдал дангаараа ижил этгээд, хамаарал эсвэл авлигыг нотлохгүй. Холбоосыг регистр, албан ID, эх баримтаар тусад нь баталгаажуулна.'}
 
 
 def tender_dict(t,db):
