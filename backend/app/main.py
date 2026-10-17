@@ -479,35 +479,55 @@ def production_check(db:Session=Depends(get_db)):
 
 @app.post('/api/v1/admin/sources/validate-all',dependencies=[Depends(require_admin)])
 async def validate_all_sources(db:Session=Depends(get_db)):
-    """Smoke-test registered public portal URLs independently and persist each attempt."""
+    """Validate each source according to its actual integration type; never equate a portal homepage with a dataset import."""
     from datetime import datetime,timezone
+    import hashlib
     results=[]
     registered=list(db.scalars(select(SourceRegistry).order_by(SourceRegistry.code)).all())
     for source in registered:
-        if source.access_method=='bearer_api':
-            status='blocked' if not settings.tender_bearer_token else 'manual_api_test_required'
-            results.append({'source_code':source.code,'url':source.url,'status':status,'detail':'Тендерийн REST API-г bearer token-той /admin/sync/tenders endpoint-ээр тусад нь туршина.'})
-            continue
         run=SourceSyncRun(source_code=source.code,source_url=source.url,status='running')
         db.add(run);db.commit();db.refresh(run)
         try:
+            if source.code=='tender_official':
+                if not settings.tender_bearer_token:
+                    run.status='blocked';run.error_message='TENDER_BEARER_TOKEN тохируулаагүй';run.finished_at=datetime.now(timezone.utc)
+                    source.last_error=run.error_message;db.commit()
+                    results.append({'source_code':source.code,'url':source.url,'status':'blocked','detail':'Тендерийн API token шаардлагатай. API эрхийг албан ёсоор авсны дараа бодит endpoint шалгана.'})
+                    continue
+                body=await tender_invitations(page=1,per_page=1)
+                payload=json.dumps(body,ensure_ascii=False,sort_keys=True,separators=(',',':')).encode('utf-8')
+                data_rows=body.get('data',[])
+                run.status='success';run.records_seen=len(data_rows);run.records_saved=0;run.content_type='application/json';run.bytes_downloaded=len(payload);run.content_sha256=hashlib.sha256(payload).hexdigest()
+                run.finished_at=datetime.now(timezone.utc);source.last_success_at=run.finished_at;source.last_error=None;db.commit()
+                results.append({'source_code':source.code,'url':source.url,'status':'success','format':'official_api_json','sample_records':len(data_rows),'bytes_downloaded':len(payload),'content_sha256':run.content_sha256,'detail':'Бодит тендер API endpoint шалгасан; өгөгдлийг импортлоогүй.'})
+                continue
+            if source.code=='government_opendata':
+                package_result=await ckan_package_search(q='*',start=0,rows=1)
+                payload=json.dumps(package_result,ensure_ascii=False,sort_keys=True,separators=(',',':')).encode('utf-8')
+                datasets=package_result.get('results',[])
+                run.status='success';run.records_seen=len(datasets);run.records_saved=0;run.content_type='application/json';run.bytes_downloaded=len(payload);run.content_sha256=hashlib.sha256(payload).hexdigest()
+                run.finished_at=datetime.now(timezone.utc);source.last_success_at=run.finished_at;source.last_error=None;db.commit()
+                results.append({'source_code':source.code,'url':'https://opendata.gov.mn/api/3/action/package_search?q=%2A&rows=1','status':'success','format':'ckan_api_json','sample_records':len(datasets),'bytes_downloaded':len(payload),'content_sha256':run.content_sha256,'detail':'CKAN-ийн бодит package_search API шалгасан; resource бүрийн таталт тусдаа баталгаажна.'})
+                continue
             validate_public_url(source.url)
             fmt,rows,meta=await fetch_registered_public_resource(source.url,max_bytes=5_000_000,max_rows=3)
             run.status='success';run.records_seen=len(rows);run.records_saved=0
             run.bytes_downloaded=meta['bytes_downloaded'];run.content_type=meta['content_type'];run.content_sha256=meta['sha256'];run.finished_at=datetime.now(timezone.utc)
-            source.last_success_at=run.finished_at;source.last_error=None
-            results.append({'source_code':source.code,'url':meta['final_url'],'status':'success','format':fmt,'sample_records':len(rows),'bytes_downloaded':meta['bytes_downloaded'],'content_sha256':meta['sha256'],'detail':'Зөвхөн холболт ба parser-ийн smoke test; өгөгдлийг үндсэн санд импортлоогүй.'})
-            db.commit()
-        except (ConnectorError,Exception) as exc:
+            source.last_success_at=run.finished_at;source.last_error=None;db.commit()
+            # A homepage response is not evidence that the underlying dataset/API schema is usable.
+            results.append({'source_code':source.code,'url':meta['final_url'],'status':'portal_reachable_schema_unverified','format':fmt,'sample_records':len(rows),'bytes_downloaded':meta['bytes_downloaded'],'content_sha256':meta['sha256'],'detail':'Порталын URL болон parser шалгасан. Өгөгдлийн API/schema эсвэл тодорхой файл баталгаажаагүй тул бодит dataset холболт гэж тооцохгүй.'})
+        except Exception as exc:
             db.rollback()
             failed=db.get(SourceSyncRun,run.id)
             current=db.get(SourceRegistry,source.id)
+            detail=(str(exc) or type(exc).__name__)[:2000]
             if failed:
-                failed.status='failed';failed.error_message=(str(exc) or type(exc).__name__)[:2000];failed.finished_at=datetime.now(timezone.utc)
-            if current:current.last_error=(str(exc) or type(exc).__name__)[:2000]
+                failed.status='failed';failed.error_message=detail;failed.finished_at=datetime.now(timezone.utc)
+            if current:current.last_error=detail
             db.commit()
-            results.append({'source_code':source.code,'url':source.url,'status':'failed','detail':(str(exc) or type(exc).__name__)[:500]})
-    return {'checked_at':datetime.now(timezone.utc).isoformat(),'checked_sources':len(results),'success':sum(1 for r in results if r['status']=='success'),'failed':sum(1 for r in results if r['status']=='failed'),'blocked_or_manual':sum(1 for r in results if r['status'] not in ('success','failed')),'results':results,'note':'Эх сурвалж бүр тусдаа үр дүнтэй. Нэвтрэлт шаардсан эх сурвалжийг тойрч гарахгүй.'}
+            results.append({'source_code':source.code,'url':source.url,'status':'failed','detail':detail[:500]})
+    statuses=[r['status'] for r in results]
+    return {'checked_at':datetime.now(timezone.utc).isoformat(),'checked_sources':len(results),'api_or_resource_success':sum(1 for s in statuses if s=='success'),'portal_only_schema_unverified':sum(1 for s in statuses if s=='portal_reachable_schema_unverified'),'failed':sum(1 for s in statuses if s=='failed'),'blocked':sum(1 for s in statuses if s=='blocked'),'results':results,'note':'success нь зөвхөн source-specific API эсвэл ресурс шалгалт амжилттайг илэрхийлнэ. portal_reachable_schema_unverified нь өгөгдөл таталт батлагдсан гэсэн үг биш.'}
 
 def stable_record_identity(normalized, row):
     # Keep row identity scoped to a procurement/contract when those fields exist.
