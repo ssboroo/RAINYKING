@@ -40,3 +40,11 @@ No portal login is bypassed and no HTML scraping is presented as an official API
 - Хязгаарлалт: PDF нь текстэн PDF байх шаардлагатай (OCR байхгүй); XLSX active worksheet-ийн эхний мөрийг header гэж үзнэ; сайт бүрийн API/schema өөр тул эх сурвалж тус бүр дээр URL-ийг эхлээд inspect хийж баталгаажуулна.
 
 - Optional periodic worker: set AUTO_SYNC_SOURCES to a JSON list such as [{"source_code":"shilendans","url":"https://shilendans.gov.mn/openData"}], then run `docker compose --profile scheduler up -d --build`. AUTO_SYNC_INTERVAL_MINUTES defaults to 360. Empty configuration means idle; only choose stable, public dataset URLs, not a login page or a general portal homepage.
+
+
+## Дараагийн шат: өгөгдлийн мөр ба entity resolution
+- Админ: GET `/api/v1/admin/source-records?source_code=...` нь эх холбоос, raw өгөгдөл, стандартчилсан талбар, SHA-256 хэшийг харуулна.
+- Админ: GET `/api/v1/admin/entity-resolution/candidates?threshold=0.88` нь нэр төстэй компани/байгууллагын боломжит давхардлыг санал болгоно. Энэ нь зөвхөн review queue бөгөөд автоматаар нэгтгэхгүй.
+- Админ: POST `/api/v1/admin/relationships` холбоосыг нотлох SourceRecord ID-тай үүсгэнэ. POST `/api/v1/admin/relationships/{id}/review` холбоосыг verified/rejected/pending_review болгож, audit log-д тэмдэглэнэ.
+- GET `/api/v1/relationships?verification_status=verified` зөвхөн баталгаажсан холбоосуудыг өгнө.
+- Өгөгдлийн мөрийн тогтвортой түлхүүр нь одоо мөрийн дугаараас хамаарахгүй: хүчтэй ID (регистр/тендер/гэрээ) эсвэл canonical мөрийн хэш ашиглана.

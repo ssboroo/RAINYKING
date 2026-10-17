@@ -19,7 +19,7 @@ def source_configs():
         raise ValueError("AUTO_SYNC_SOURCES must be a JSON array")
     return items
 
-def store_row(db, source, external_id, payload, source_url):
+def stable_record_identity(normalized, row):\n    strong=normalized.get('registration') or normalized.get('tender_id') or normalized.get('contract_id')\n    if strong: return hashlib.sha256(str(strong).casefold().strip().encode('utf-8')).hexdigest()[:32]\n    canonical=json.dumps(row,ensure_ascii=False,sort_keys=True,separators=(',',':'))\n    return hashlib.sha256(canonical.encode('utf-8')).hexdigest()[:32]\n\ndef store_row(db, source, external_id, payload, source_url):
     encoded=json.dumps(payload,ensure_ascii=False,sort_keys=True,separators=(",",":")).encode("utf-8")
     digest=hashlib.sha256(encoded).hexdigest()
     record=db.scalar(select(SourceRecord).where(SourceRecord.source_id==source.id,SourceRecord.external_id==external_id,SourceRecord.sha256==digest))
@@ -59,7 +59,7 @@ async def sync_one(config):
             for index,row in enumerate(rows,1):
                 normalized=normalize_record(row)
                 identity=normalized.get("registration") or normalized.get("tender_id") or normalized.get("contract_id") or normalized.get("title") or ""
-                stable=hashlib.sha256((str(identity).casefold()+"|"+str(index)).encode()).hexdigest()[:32]
+                stable=stable_record_identity(normalized,row)
                 payload={"kind":"public_source_record","format":fmt,"row_number":index,"normalized":normalized,"raw":row,"content_sha256":meta["sha256"]}
                 store_row(db,source,"scheduled:"+stable,payload,meta["final_url"])
             run.status="success";run.records_seen=len(rows);run.records_saved=len(rows)

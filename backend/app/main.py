@@ -1,5 +1,5 @@
 from contextlib import asynccontextmanager
-import hashlib, json
+import hashlib, json, re\nfrom difflib import SequenceMatcher
 from fastapi import FastAPI, Depends, HTTPException, Header, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -323,7 +323,113 @@ def safe_float(value):
     except (ValueError,TypeError):return None
 
 
-class SourceInspectIn(BaseModel):
+
+
+class RelationshipCreateIn(BaseModel):
+    from_type: str = Field(pattern="^(company|organization|tender)$")
+    from_id: int = Field(gt=0)
+    to_type: str = Field(pattern="^(company|organization|tender)$")
+    to_id: int = Field(gt=0)
+    relationship_type: str = Field(min_length=3,max_length=100)
+    source_record_id: int = Field(gt=0)
+    confidence: float = Field(default=0.5,ge=0,le=1)
+    reviewer_note: str = Field(default="",max_length=2000)
+
+class RelationshipReviewIn(BaseModel):
+    verification_status: str = Field(pattern="^(verified|rejected|pending_review)$")
+    reviewer_note: str = Field(min_length=3,max_length=2000)
+
+def entity_exists(db, entity_type, entity_id):
+    model={"company":Company,"organization":Organization,"tender":Tender}.get(entity_type)
+    return bool(model and db.get(model,entity_id))
+
+def normalized_entity_name(value):
+    value=(value or "").casefold().strip()
+    value=re.sub(r"[\W_]+"," ",value,flags=re.UNICODE)
+    return re.sub(r"\s+"," ",value).strip()
+
+@app.get('/api/v1/admin/source-records',dependencies=[Depends(require_admin)])
+def source_records(source_code:str|None=None,q:str|None=None,limit:int=Query(default=50,ge=1,le=200),offset:int=Query(default=0,ge=0),db:Session=Depends(get_db)):
+    stmt=select(SourceRecord).order_by(SourceRecord.id.desc())
+    if source_code:
+        source=db.scalar(select(SourceRegistry).where(SourceRegistry.code==source_code))
+        if not source: raise HTTPException(404,'Эх сурвалж олдсонгүй')
+        stmt=stmt.where(SourceRecord.source_id==source.id)
+    records=list(db.scalars(stmt.offset(offset).limit(limit)))
+    out=[]
+    for record in records:
+        payload=record.raw_payload if isinstance(record.raw_payload,dict) else {}
+        normalized=payload.get('normalized',{}) if isinstance(payload,dict) else {}
+        if q and q.casefold() not in json.dumps(payload,ensure_ascii=False).casefold():
+            continue
+        source=db.get(SourceRegistry,record.source_id)
+        out.append({'id':record.id,'source_code':source.code if source else None,'external_id':record.external_id,'source_url':record.source_url,'sha256':record.sha256,'fetched_at':record.fetched_at,'parser_version':record.parser_version,'normalized':normalized,'raw_payload':payload})
+    return {'items':out,'limit':limit,'offset':offset,'count':len(out)}
+
+@app.get('/api/v1/admin/entity-resolution/candidates',dependencies=[Depends(require_admin)])
+def entity_resolution_candidates(threshold:float=Query(default=0.88,ge=0.5,le=1),limit:int=Query(default=100,ge=1,le=500),db:Session=Depends(get_db)):
+    candidates=[]
+    companies=list(db.scalars(select(Company).order_by(Company.id)))
+    for i,left in enumerate(companies):
+        if left.registration: continue
+        a=normalized_entity_name(left.name)
+        if len(a)<4: continue
+        for right in companies[i+1:]:
+            if right.registration: continue
+            b=normalized_entity_name(right.name)
+            score=SequenceMatcher(None,a,b).ratio()
+            if score>=threshold:
+                candidates.append({'entity_type':'company','left':{'id':left.id,'name':left.name,'registration':left.registration,'status':left.resolution_status},'right':{'id':right.id,'name':right.name,'registration':right.registration,'status':right.resolution_status},'similarity':round(score,4),'recommendation':'manual_review_only'})
+    organizations=list(db.scalars(select(Organization).order_by(Organization.id)))
+    for i,left in enumerate(organizations):
+        a=normalized_entity_name(left.name)
+        if len(a)<4: continue
+        for right in organizations[i+1:]:
+            if left.official_id and right.official_id and left.official_id!=right.official_id: continue
+            b=normalized_entity_name(right.name)
+            score=SequenceMatcher(None,a,b).ratio()
+            if score>=threshold:
+                candidates.append({'entity_type':'organization','left':{'id':left.id,'name':left.name,'official_id':left.official_id},'right':{'id':right.id,'name':right.name,'official_id':right.official_id},'similarity':round(score,4),'recommendation':'manual_review_only'})
+    candidates.sort(key=lambda x:x['similarity'],reverse=True)
+    return {'threshold':threshold,'count':min(len(candidates),limit),'candidates':candidates[:limit],'warning':'Нэрийн төстэй байдал нь ижил этгээд болохыг нотлохгүй. Автомат нэгтгэл хийгээгүй.'}
+
+@app.post('/api/v1/admin/relationships',dependencies=[Depends(require_admin)])
+def create_relationship(data:RelationshipCreateIn,db:Session=Depends(get_db)):
+    if data.from_type==data.to_type and data.from_id==data.to_id: raise HTTPException(422,'Өөртэй нь холбоос үүсгэх боломжгүй')
+    if not entity_exists(db,data.from_type,data.from_id) or not entity_exists(db,data.to_type,data.to_id):
+        raise HTTPException(404,'Холбоосын нэг талын entity олдсонгүй')
+    evidence=db.get(SourceRecord,data.source_record_id)
+    if not evidence: raise HTTPException(404,'Эх сурвалжийн бүртгэл олдсонгүй')
+    existing=db.scalar(select(Relationship).where(Relationship.from_type==data.from_type,Relationship.from_id==data.from_id,Relationship.to_type==data.to_type,Relationship.to_id==data.to_id,Relationship.relationship_type==data.relationship_type,Relationship.source_record_id==data.source_record_id))
+    if existing: return {'id':existing.id,'status':'already_exists'}
+    row=Relationship(from_type=data.from_type,from_id=data.from_id,to_type=data.to_type,to_id=data.to_id,relationship_type=data.relationship_type,source_record_id=data.source_record_id,confidence=data.confidence,verification_status='pending_review',reviewer_note=data.reviewer_note)
+    db.add(row);db.flush()
+    db.add(AuditLog(actor='admin_api',action='relationship_created',details={'relationship_id':row.id,'from_type':row.from_type,'from_id':row.from_id,'to_type':row.to_type,'to_id':row.to_id,'source_record_id':row.source_record_id}))
+    db.commit()
+    return {'id':row.id,'verification_status':row.verification_status,'confidence':row.confidence}
+
+@app.post('/api/v1/admin/relationships/{relationship_id}/review',dependencies=[Depends(require_admin)])
+def review_relationship(relationship_id:int,data:RelationshipReviewIn,db:Session=Depends(get_db)):
+    row=db.get(Relationship,relationship_id)
+    if not row: raise HTTPException(404,'Холбоос олдсонгүй')
+    row.verification_status=data.verification_status;row.reviewer_note=data.reviewer_note
+    db.add(AuditLog(actor='admin_api',action='relationship_reviewed',details={'relationship_id':row.id,'verification_status':row.verification_status,'note':row.reviewer_note}))
+    db.commit()
+    return {'id':row.id,'verification_status':row.verification_status,'reviewer_note':row.reviewer_note}
+
+@app.get('/api/v1/relationships')
+def public_relationships(verification_status:str='verified',limit:int=Query(default=100,ge=1,le=500),db:Session=Depends(get_db)):
+    if verification_status not in ('verified','pending_review','rejected'): raise HTTPException(422,'Invalid status')
+    rows=db.scalars(select(Relationship).where(Relationship.verification_status==verification_status).order_by(Relationship.id.desc()).limit(limit))
+    return [{'id':x.id,'from_type':x.from_type,'from_id':x.from_id,'to_type':x.to_type,'to_id':x.to_id,'relationship_type':x.relationship_type,'confidence':x.confidence,'verification_status':x.verification_status,'source_record_id':x.source_record_id,'reviewer_note':x.reviewer_note} for x in rows]
+\ndef stable_record_identity(normalized, row):
+    strong = normalized.get("registration") or normalized.get("tender_id") or normalized.get("contract_id")
+    if strong:
+        return hashlib.sha256(str(strong).casefold().strip().encode("utf-8")).hexdigest()[:32]
+    # Fallback to canonical row content; avoids row-position based identity.
+    canonical=json.dumps(row,ensure_ascii=False,sort_keys=True,separators=(",",":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:32]
+\nclass SourceInspectIn(BaseModel):
     source_code: str = Field(min_length=1,max_length=90)
     url: str = Field(min_length=10,max_length=2000)
 class PublicSourceSyncIn(BaseModel):
@@ -357,7 +463,7 @@ async def sync_public_source(data:PublicSourceSyncIn,db:Session=Depends(get_db))
         for index,row in enumerate(rows,1):
             norm=normalize_record(row)
             identity=norm.get('registration') or norm.get('tender_id') or norm.get('contract_id') or norm.get('title') or ''
-            stable=hashlib.sha256((str(identity).casefold()+'|'+str(index)).encode()).hexdigest()[:32]
+            stable=stable_record_identity(norm,row)
             store_source_payload(db,'public:'+data.source_code+':'+stable,{'kind':'public_source_record','format':fmt,'row_number':index,'normalized':norm,'raw':row,'content_sha256':meta['sha256']},source_url=meta['final_url'],source_code=data.source_code)
         from datetime import datetime,timezone
         run.status='success';run.records_seen=len(rows);run.records_saved=len(rows);run.bytes_downloaded=meta['bytes_downloaded'];run.content_type=meta['content_type'];run.content_sha256=meta['sha256'];run.finished_at=datetime.now(timezone.utc)

@@ -28,3 +28,14 @@ def test_does_not_invent_entity_identity_from_name_only():
     row = normalize_record({"Байгууллагын нэр": "Жишээ байгууллага"})
     assert row["name"] == "Жишээ байгууллага"
     assert "registration" not in row
+
+
+from app.main import normalized_entity_name, stable_record_identity
+
+def test_stable_source_identity_does_not_depend_on_row_number():
+    row = {"Тендерийн дугаар": "TN-2026-004"}
+    normalized = normalize_record(row)
+    assert stable_record_identity(normalized, row) == stable_record_identity(normalized, row)
+
+def test_entity_name_normalization_ignores_punctuation_and_case():
+    assert normalized_entity_name("  Жишээ   ХХК ") == normalized_entity_name("ЖИШЭЭ-ХХК")
