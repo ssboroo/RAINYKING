@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from sqlalchemy import String, Integer, Float, DateTime, Boolean, Text, ForeignKey, UniqueConstraint, JSON
+from sqlalchemy import String, Integer, Float, DateTime, Boolean, Text, ForeignKey, UniqueConstraint, JSON, Index
 from sqlalchemy.orm import Mapped, mapped_column
 from .db import Base
 
@@ -19,7 +19,7 @@ class SourceRegistry(Base):
 
 class SourceRecord(Base):
     __tablename__='source_records'
-    __table_args__=(UniqueConstraint('source_id','external_id','sha256',name='uq_source_external_hash'),)
+    __table_args__=(UniqueConstraint('source_id','external_id','sha256',name='uq_source_external_hash'), Index('ix_source_record_latest','source_id','external_id','fetched_at'),)
     id: Mapped[int] = mapped_column(primary_key=True)
     source_id: Mapped[int] = mapped_column(ForeignKey('source_registry.id'))
     external_id: Mapped[str] = mapped_column(String(180))
@@ -48,8 +48,8 @@ class Tender(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     external_id: Mapped[str] = mapped_column(String(180), unique=True)
     title: Mapped[str] = mapped_column(String(600), index=True)
-    organization_id: Mapped[int|None] = mapped_column(ForeignKey('organizations.id'), nullable=True)
-    awardee_company_id: Mapped[int|None] = mapped_column(ForeignKey('companies.id'), nullable=True)
+    organization_id: Mapped[int|None] = mapped_column(ForeignKey('organizations.id'), nullable=True, index=True)
+    awardee_company_id: Mapped[int|None] = mapped_column(ForeignKey('companies.id'), nullable=True, index=True)
     budget_amount: Mapped[float|None] = mapped_column(Float, nullable=True)
     currency: Mapped[str] = mapped_column(String(8), default='MNT')
     bid_count: Mapped[int|None] = mapped_column(Integer, nullable=True)

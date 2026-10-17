@@ -171,6 +171,58 @@ def tender_plan_list(limit:int=Query(default=30,ge=1,le=100),db:Session=Depends(
 def tenders(limit:int=Query(default=30,ge=1,le=100),db:Session=Depends(get_db)):
     return [tender_dict(t,db) for t in db.scalars(select(Tender).order_by(Tender.id.desc()).limit(limit))]
 
+class WebDiscoveryIn(BaseModel):
+    source_codes: list[str] = Field(min_length=1, max_length=12)
+    q: str = Field(default='', max_length=200)
+    max_pages: int = Field(default=5, ge=1, le=10)
+    max_depth: int = Field(default=2, ge=0, le=3)
+
+@app.post('/api/v1/admin/sources/discover-web', dependencies=[Depends(require_admin)])
+async def discover_web(data: WebDiscoveryIn, db: Session = Depends(get_db)):
+    from .web_discovery import crawl_public_site
+    from datetime import datetime, timezone
+    sources = []
+    for code in dict.fromkeys(data.source_codes):
+        source = db.scalar(select(SourceRegistry).where(SourceRegistry.code == code))
+        if source is None: raise HTTPException(404, 'Эх сурвалж бүртгэлгүй: ' + code)
+        try: validate_public_url(source.url)
+        except ConnectorError as exc: raise HTTPException(422, str(exc))
+        sources.append(source)
+    results = []
+    for source in sources:
+        run = SourceSyncRun(source_code=source.code, source_url=source.url, status='running')
+        db.add(run); db.commit(); db.refresh(run)
+        try:
+            result = await crawl_public_site(source.url, data.q, data.max_pages, data.max_depth)
+            saved = 0
+            for record in result.pop('records'):
+                identity = hashlib.sha256((record['url']+'#'+str(record['row_index'])).encode()).hexdigest()
+                store_source_payload(db, 'web:'+identity, {'kind': 'public_web_document', 'format': record['format'],
+                                     'raw': record['row'], 'normalized': normalize_record(record['row']),
+                                     'content_sha256': record['content_sha256']}, source_url=record['url'], source_code=source.code)
+                saved += 1
+            run.status = 'success' if any(p['status'] in ('read', 'limited_html_possible_javascript') for p in result['pages']) else 'failed'
+            run.records_saved = saved; run.records_seen = sum(p.get('rows_read', 0) for p in result['pages'])
+            run.finished_at = datetime.now(timezone.utc)
+            if run.status == 'failed': run.error_message = result['status']
+            db.commit()
+            results.append({'source_code': source.code, 'run_id': run.id, 'records_saved': saved, **result})
+        except Exception as exc:
+            db.rollback(); run = db.get(SourceSyncRun, run.id)
+            run.status = 'failed'; run.finished_at = datetime.now(timezone.utc); run.error_message = type(exc).__name__
+            db.commit()
+            results.append({'source_code': source.code, 'status': 'failed', 'error': type(exc).__name__, 'records_saved': 0})
+    return {'sources': results, 'note': 'Импортолсон баримт одоо нэгдсэн хайлт ба тайланд орно. Crawl-ийн хүрээ, саатал, алдааг эх сурвалж тус бүрээр харуулна.'}
+
+@app.get('/api/v1/unified-report')
+def unified_report(q: str = Query(default='', max_length=200),
+                   registration: str = Query(default='', max_length=100),
+                   db: Session = Depends(get_db)):
+    if not q.strip() and not registration.strip():
+        raise HTTPException(422, 'Нэр, түлхүүр үг эсвэл регистр оруулна уу.')
+    from .reporting import build_report
+    return build_report(db, q.strip(), registration.strip())
+
 @app.get('/api/v1/record-search')
 def record_search(
     q: str = Query(default='', max_length=200),
