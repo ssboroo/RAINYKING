@@ -4,7 +4,7 @@ from difflib import SequenceMatcher
 from fastapi import FastAPI, Depends, HTTPException, Header, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from sqlalchemy import select, or_, func
+from sqlalchemy import select, or_, func, cast
 from sqlalchemy.orm import Session
 from .config import settings
 from .db import Base, engine, get_db
@@ -95,12 +95,12 @@ def search(q:str=Query(min_length=1,max_length=200),db:Session=Depends(get_db)):
     plans=[{'id':x.id,'name':x.title,'external_id':x.external_id,'tender_code':x.tender_code,'tender_year':x.tender_year,'organization_name':x.organization_name,'budget_amount':x.budget_amount,'entity_type':'tender_plan'} for x in db.scalars(select(TenderPlan).where(or_(TenderPlan.title.ilike(term),TenderPlan.external_id.ilike(term),TenderPlan.tender_code.ilike(term),TenderPlan.organization_name.ilike(term))).limit(30))]
     # Search public-source payloads as evidence records; never promote a name-only match into a verified person/company identity.
     source_matches=[]
-    for rec in db.scalars(select(SourceRecord).order_by(SourceRecord.fetched_at.desc()).limit(500)).all():
+    matched_records=db.scalars(select(SourceRecord).where(cast(SourceRecord.raw_payload,Text).ilike(term)).order_by(SourceRecord.fetched_at.desc()).limit(30)).all()
+    for rec in matched_records:
         serialized=json.dumps(rec.raw_payload,ensure_ascii=False,sort_keys=True)
-        if q.strip().casefold() not in serialized.casefold(): continue
         source=db.get(SourceRegistry,rec.source_id)
-        source_matches.append({'id':rec.id,'source_name':source.name if source else rec.source_id,'external_id':rec.external_id,'source_url':rec.source_url,'sha256':rec.sha256,'fetched_at':rec.fetched_at,'match_excerpt':serialized[:420] if len(serialized)<=420 else serialized[max(0,serialized.casefold().find(q.strip().casefold())-150):serialized.casefold().find(q.strip().casefold())+270]})
-        if len(source_matches)>=30: break
+        folded=serialized.casefold();needle=q.strip().casefold();position=folded.find(needle)
+        source_matches.append({'id':rec.id,'source_name':source.name if source else rec.source_id,'external_id':rec.external_id,'source_url':rec.source_url,'sha256':rec.sha256,'fetched_at':rec.fetched_at,'match_excerpt':serialized[:420] if len(serialized)<=420 else serialized[max(0,position-150):position+270]})
     return {'query':q,'tenders':tenders,'companies':companies,'organizations':organizations,'suppliers':suppliers,'tender_plans':plans,'source_records':source_matches,'note':'Нэрээр таарсан түүхий эх сурвалж нь зөвхөн хайлтын тааралт. Иргэний/хуулийн этгээдийн адилтгалыг регистр, албан ID болон эх баримтаар баталгаажуулна.'}
 
 
@@ -300,6 +300,59 @@ def evidence(eid:int,db:Session=Depends(get_db)):
     x=db.get(Evidence,eid)
     if not x:raise HTTPException(404,'Evidence not found')
     return {'id':x.id,'source_url':x.source_url,'document_hash':x.document_hash,'excerpt':x.excerpt,'page_number':x.page_number,'verified':x.verified}
+
+
+class CrossSourceLinkBuildIn(BaseModel):
+    max_records: int = Field(default=50000, ge=100, le=100000)
+
+@app.post('/api/v1/admin/rebuild-cross-source-links',dependencies=[Depends(require_admin)])
+def rebuild_cross_source_links(data:CrossSourceLinkBuildIn,db:Session=Depends(get_db)):
+    def flatten(obj):
+        values={}
+        if isinstance(obj,dict):
+            for key,value in obj.items():
+                if isinstance(value,dict): values.update(flatten(value))
+                elif isinstance(value,list):
+                    for item in value:
+                        if isinstance(item,dict): values.update(flatten(item))
+                elif value is not None: values[key]=value
+        return values
+    records=db.scalars(select(SourceRecord).order_by(SourceRecord.id.asc()).limit(data.max_records)).all()
+    groups={}
+    for rec in records:
+        payload=rec.raw_payload if isinstance(rec.raw_payload,dict) else {}
+        fields=normalize_record(flatten(payload))
+        identifiers=[
+            ('registration',str(fields.get('registration') or '').strip().upper()),
+            ('tender_id',str(fields.get('tender_id') or '').strip()),
+            ('contract_id',str(fields.get('contract_id') or '').strip()),
+        ]
+        for kind,value in identifiers:
+            if not value or (kind=='registration' and len(value)<5) or (kind!='registration' and len(value)<3): continue
+            groups.setdefault((kind,value),[]).append(rec)
+    created=0; groups_linked=0; skipped_same_source=0
+    for (kind,value),items in groups.items():
+        # One anchor per identifier avoids quadratic edge growth; only cross-source links are persisted.
+        unique={item.id:item for item in items}
+        items=list(unique.values())
+        if len({item.source_id for item in items})<2: continue
+        anchor_record=items[0]; group_created=0
+        for other in items[1:]:
+            if other.source_id==anchor_record.source_id:
+                skipped_same_source+=1
+                continue
+            exists=db.scalar(select(Relationship).where(
+                Relationship.from_type=='source_record',Relationship.from_id==anchor_record.id,
+                Relationship.to_type=='source_record',Relationship.to_id==other.id,
+                Relationship.relationship_type==f'exact_{kind}'
+            ))
+            if exists: continue
+            db.add(Relationship(from_type='source_record',from_id=anchor_record.id,to_type='source_record',to_id=other.id,relationship_type=f'exact_{kind}',source_record_id=other.id,confidence=1.0,verification_status='identifier_match',reviewer_note=f'Автомат холболт: {kind} яг ижил утгатай; value_hash={hashlib.sha256(value.encode()).hexdigest()[:16]}. Нэрийн төстэй байдлаар холбогоогүй.'))
+            created+=1;group_created+=1
+        if group_created: groups_linked+=1
+        if created and created%500==0: db.flush()
+    db.commit()
+    return {'records_scanned':len(records),'max_records':data.max_records,'identifier_groups':len(groups),'groups_linked':groups_linked,'links_created':created,'same_source_candidates_skipped':skipped_same_source,'link_policy':'Exact registry/tender/contract identifiers only; no name-only automatic merge.','note':'max_records хязгаарт хүрсэн бол дахин ажиллуулж үлдсэн өгөгдлийг хамруулах шаардлагатай.'}
 
 @app.post('/api/v1/admin/import/tender',dependencies=[Depends(require_admin)])
 def import_tender(data:TenderIn,db:Session=Depends(get_db)):
