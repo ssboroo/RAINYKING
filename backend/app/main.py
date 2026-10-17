@@ -28,6 +28,7 @@ async def lifespan(app):
             if not db.scalar(select(SourceRegistry).where(SourceRegistry.code == code)):
                 db.add(SourceRegistry(code=code,name=name,url=url,access_method=method,license_notes='Зөвшөөрөл ба автомат таталтын нөхцөлийг баталгаажуулах шаардлагатай'))
         db.commit()
+        upsert_connector_registry(db)
     yield
 
 app=FastAPI(title='RAINY TRANSPARENCY API', version='0.1.0', lifespan=lifespan)
@@ -60,7 +61,8 @@ def health(): return {'ok':True,'service':'rainy-transparency'}
 
 @app.get('/api/v1/source-status')
 def source_status(db:Session=Depends(get_db)):
-    return [{'code':s.code,'name':s.name,'url':s.url,'access_method':s.access_method,'last_success_at':s.last_success_at,'last_error':s.last_error,'status':'updated' if s.last_success_at else 'not_connected','license_notes':s.license_notes} for s in db.scalars(select(SourceRegistry)).all()]
+    upsert_connector_registry(db)
+    return catalog_status(db)
 
 @app.get('/api/v1/stats')
 def stats(db:Session=Depends(get_db)):
