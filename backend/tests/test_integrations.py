@@ -39,3 +39,8 @@ def test_stable_source_identity_does_not_depend_on_row_number():
 
 def test_entity_name_normalization_ignores_punctuation_and_case():
     assert normalized_entity_name("  Жишээ   ХХК ") == normalized_entity_name("ЖИШЭЭ-ХХК")
+
+from app.main import normalized_entity_name
+
+def test_investigation_search_normalization_is_stable_for_mongolian_names():
+    assert normalized_entity_name("  ТӨРИЙН   ӨМЧИТ ХХК ") == normalized_entity_name("төрийн өмчит ххк")

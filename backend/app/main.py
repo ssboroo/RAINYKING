@@ -87,8 +87,22 @@ def store_source_payload(db:Session, external_id:str, payload:dict, source_url:s
 
 @app.get('/api/v1/search')
 def search(q:str=Query(min_length=1,max_length=200),db:Session=Depends(get_db)):
-    term=f'%{q}%'
-    return {'tenders':[tender_dict(x,db) for x in db.scalars(select(Tender).where(or_(Tender.title.ilike(term),Tender.external_id.ilike(term))).limit(30))], 'companies':[{'id':x.id,'name':x.name,'registration':x.registration,'resolution_status':x.resolution_status} for x in db.scalars(select(Company).where(Company.name.ilike(term)).limit(30))], 'organizations':[{'id':x.id,'name':x.name} for x in db.scalars(select(Organization).where(Organization.name.ilike(term)).limit(30))]}
+    term=f'%{q.strip()}%'
+    tenders=[tender_dict(x,db) for x in db.scalars(select(Tender).where(or_(Tender.title.ilike(term),Tender.external_id.ilike(term))).order_by(Tender.id.desc()).limit(30))]
+    companies=[{'id':x.id,'name':x.name,'registration':x.registration,'resolution_status':x.resolution_status,'entity_type':'company'} for x in db.scalars(select(Company).where(or_(Company.name.ilike(term),Company.registration.ilike(term))).limit(30))]
+    organizations=[{'id':x.id,'name':x.name,'official_id':x.official_id,'entity_type':'organization'} for x in db.scalars(select(Organization).where(or_(Organization.name.ilike(term),Organization.official_id.ilike(term))).limit(30))]
+    suppliers=[{'id':x.id,'name':x.supplier_name,'registration':x.supplier_register,'invitation_id':x.invitation_id,'offered_price':x.offered_price,'status':x.status,'source_record_id':x.source_record_id,'source_url':(db.get(SourceRecord,x.source_record_id).source_url if db.get(SourceRecord,x.source_record_id) else None),'entity_type':'supplier'} for x in db.scalars(select(TenderSupplier).where(or_(TenderSupplier.supplier_name.ilike(term),TenderSupplier.supplier_register.ilike(term))).limit(30))]
+    plans=[{'id':x.id,'name':x.title,'external_id':x.external_id,'tender_code':x.tender_code,'tender_year':x.tender_year,'organization_name':x.organization_name,'budget_amount':x.budget_amount,'entity_type':'tender_plan'} for x in db.scalars(select(TenderPlan).where(or_(TenderPlan.title.ilike(term),TenderPlan.external_id.ilike(term),TenderPlan.tender_code.ilike(term),TenderPlan.organization_name.ilike(term))).limit(30))]
+    # Search public-source payloads as evidence records; never promote a name-only match into a verified person/company identity.
+    source_matches=[]
+    for rec in db.scalars(select(SourceRecord).order_by(SourceRecord.fetched_at.desc()).limit(500)).all():
+        serialized=json.dumps(rec.raw_payload,ensure_ascii=False,sort_keys=True)
+        if q.strip().casefold() not in serialized.casefold(): continue
+        source=db.get(SourceRegistry,rec.source_id)
+        source_matches.append({'id':rec.id,'source_name':source.name if source else rec.source_id,'external_id':rec.external_id,'source_url':rec.source_url,'sha256':rec.sha256,'fetched_at':rec.fetched_at,'match_excerpt':serialized[:420] if len(serialized)<=420 else serialized[max(0,serialized.casefold().find(q.strip().casefold())-150):serialized.casefold().find(q.strip().casefold())+270]})
+        if len(source_matches)>=30: break
+    return {'query':q,'tenders':tenders,'companies':companies,'organizations':organizations,'suppliers':suppliers,'tender_plans':plans,'source_records':source_matches,'note':'Нэрээр таарсан түүхий эх сурвалж нь зөвхөн хайлтын тааралт. Иргэний/хуулийн этгээдийн адилтгалыг регистр, албан ID болон эх баримтаар баталгаажуулна.'}
+
 
 def tender_dict(t,db):
     rec = db.get(SourceRecord,t.source_record_id)
@@ -136,6 +150,98 @@ def entity_relationships(eid:int,db:Session=Depends(get_db)):
 def graph(entity_id:int,db:Session=Depends(get_db)):
     edges=entity_relationships(entity_id,db)
     return {'entity_id':entity_id,'edges':edges,'note':'Баталгаажаагүй холбоог гэм буруугийн нотолгоо гэж үзэхгүй.'}
+
+@app.get('/api/v1/investigation/entity/{entity_type}/{entity_id}')
+def investigation_entity_graph(entity_type:str,entity_id:int,depth:int=Query(default=2,ge=1,le=3),db:Session=Depends(get_db)):
+    allowed={'company','organization','tender','supplier','tender_plan'}
+    if entity_type not in allowed: raise HTTPException(422,'entity_type must be company, organization, tender, supplier, or tender_plan')
+    def node(t,i):
+        obj=None; label=''; detail={}; source_id=None
+        if t=='company':
+            obj=db.get(Company,i)
+            if obj: label=obj.name; detail={'registration':obj.registration,'resolution_status':obj.resolution_status}; source_id=obj.source_record_id
+        elif t=='organization':
+            obj=db.get(Organization,i)
+            if obj: label=obj.name; detail={'official_id':obj.official_id}
+        elif t=='tender':
+            obj=db.get(Tender,i)
+            if obj: label=obj.title; detail={'external_id':obj.external_id,'budget_amount':obj.budget_amount,'bid_count':obj.bid_count,'published_at':obj.published_at}; source_id=obj.source_record_id
+        elif t=='supplier':
+            obj=db.get(TenderSupplier,i)
+            if obj: label=obj.supplier_name; detail={'registration':obj.supplier_register,'invitation_id':obj.invitation_id,'offered_price':obj.offered_price,'status':obj.status}; source_id=obj.source_record_id
+        elif t=='tender_plan':
+            obj=db.get(TenderPlan,i)
+            if obj: label=obj.title; detail={'external_id':obj.external_id,'tender_code':obj.tender_code,'year':obj.tender_year,'budget_amount':obj.budget_amount}; source_id=obj.source_record_id
+        if not obj: return None
+        rec=db.get(SourceRecord,source_id) if source_id else None
+        return {'key':f'{t}:{i}','type':t,'id':i,'label':label,'details':detail,'source_record_id':source_id,'source_url':rec.source_url if rec else None,'sha256':rec.sha256 if rec else None}
+    start=node(entity_type,entity_id)
+    if not start: raise HTTPException(404,'Entity not found')
+    nodes={start['key']:start}; edges=[]; frontier=[(entity_type,entity_id,0)]; seen={(entity_type,entity_id)}
+    def add_edge(a,b,kind,confidence,status,source_id=None,note=None):
+        if not a or not b or a['key']==b['key']: return
+        key=(a['key'],b['key'],kind)
+        if any((e['from'],e['to'],e['type'])==key for e in edges): return
+        edges.append({'from':a['key'],'to':b['key'],'type':kind,'confidence':confidence,'verification_status':status,'source_record_id':source_id,'note':note})
+        nodes[a['key']]=a;nodes[b['key']]=b
+    while frontier:
+        current_type,current_id,level=frontier.pop(0)
+        if level>=depth: continue
+        neighbors=[]
+        for rel in db.scalars(select(Relationship).where(or_(
+            (Relationship.from_type==current_type)&(Relationship.from_id==current_id),
+            (Relationship.to_type==current_type)&(Relationship.to_id==current_id)
+        )).limit(250)).all():
+            if rel.from_type==current_type and rel.from_id==current_id: other=(rel.to_type,rel.to_id); direction=(current_type,current_id,rel.to_type,rel.to_id)
+            else: other=(rel.from_type,rel.from_id); direction=(rel.from_type,rel.from_id,current_type,current_id)
+            a=node(direction[0],direction[1]); b=node(direction[2],direction[3])
+            if a and b: add_edge(a,b,rel.relationship_type,rel.confidence,rel.verification_status,rel.source_record_id,rel.reviewer_note)
+            neighbors.append(other)
+        if current_type=='tender':
+            t=db.get(Tender,current_id)
+            if t:
+                if t.organization_id:
+                    org=node('organization',t.organization_id); add_edge(start if False else node('tender',t.id),org,'захиалагч байгууллага',1.0,'structural',t.source_record_id,'Tender.organization_id холбоос')
+                    neighbors.append(('organization',t.organization_id))
+                if t.awardee_company_id:
+                    comp=node('company',t.awardee_company_id); add_edge(node('tender',t.id),comp,'шалгарсан нийлүүлэгч',1.0,'structural',t.source_record_id,'Tender.awardee_company_id холбоос')
+                    neighbors.append(('company',t.awardee_company_id))
+                rec=db.get(SourceRecord,t.source_record_id); raw=rec.raw_payload if rec and isinstance(rec.raw_payload,dict) else {}
+                inv=str(raw.get('upstream_invitation_id') or '')
+                if inv:
+                    for supplier in db.scalars(select(TenderSupplier).where(TenderSupplier.invitation_id==inv).limit(100)).all():
+                        sn=node('supplier',supplier.id); add_edge(node('tender',t.id),sn,'тендерийн оролцогч',1.0,'source_linked',supplier.source_record_id,'Албан API-ийн invitation ID таарсан'); neighbors.append(('supplier',supplier.id))
+        elif current_type=='organization':
+            for t in db.scalars(select(Tender).where(Tender.organization_id==current_id).limit(100)).all():
+                add_edge(node('tender',t.id),node('organization',current_id),'захиалагч байгууллага',1.0,'structural',t.source_record_id,'Tender.organization_id холбоос'); neighbors.append(('tender',t.id))
+        elif current_type=='company':
+            comp=db.get(Company,current_id)
+            for t in db.scalars(select(Tender).where(Tender.awardee_company_id==current_id).limit(100)).all():
+                add_edge(node('tender',t.id),node('company',current_id),'шалгарсан нийлүүлэгч',1.0,'structural',t.source_record_id,'Tender.awardee_company_id холбоос'); neighbors.append(('tender',t.id))
+            if comp and comp.registration:
+                for s in db.scalars(select(TenderSupplier).where(TenderSupplier.supplier_register==comp.registration).limit(100)).all():
+                    add_edge(node('company',current_id),node('supplier',s.id),'регистрийн дугаар ижил',1.0,'identifier_match',s.source_record_id,'Регистрийн дугаараар таарсан'); neighbors.append(('supplier',s.id))
+        elif current_type=='supplier':
+            s=db.get(TenderSupplier,current_id)
+            if s:
+                for t in db.scalars(select(Tender).limit(1000)).all():
+                    rec=db.get(SourceRecord,t.source_record_id); raw=rec.raw_payload if rec and isinstance(rec.raw_payload,dict) else {}
+                    if str(raw.get('upstream_invitation_id') or '')==s.invitation_id:
+                        add_edge(node('tender',t.id),node('supplier',s.id),'тендерийн оролцогч',1.0,'source_linked',s.source_record_id,'Албан API-ийн invitation ID таарсан'); neighbors.append(('tender',t.id))
+                if s.supplier_register:
+                    for c in db.scalars(select(Company).where(Company.registration==s.supplier_register).limit(30)).all():
+                        add_edge(node('company',c.id),node('supplier',s.id),'регистрийн дугаар ижил',1.0,'identifier_match',s.source_record_id,'Регистрийн дугаараар таарсан'); neighbors.append(('company',c.id))
+        elif current_type=='tender_plan':
+            plan=db.get(TenderPlan,current_id)
+            if plan:
+                for t in db.scalars(select(Tender).where(Tender.external_id==plan.tender_code).limit(30)).all() if plan.tender_code else []:
+                    add_edge(node('tender_plan',plan.id),node('tender',t.id),'тендерийн код ижил',1.0,'identifier_match',plan.source_record_id,'Тендерийн код яг таарсан'); neighbors.append(('tender',t.id))
+        for other in neighbors:
+            if other not in seen and node(*other):
+                seen.add(other);frontier.append((other[0],other[1],level+1))
+    risk_rows=[{'id':r.id,'rule_code':r.rule_code,'title':r.title,'severity':r.severity,'confidence':r.confidence,'explanation':r.explanation,'limitations':r.limitations,'evidence_id':r.evidence_id,'review_status':r.review_status} for r in db.scalars(select(RiskFinding).where(RiskFinding.entity_type==entity_type,RiskFinding.entity_id==entity_id).limit(50))]
+    return {'root':start,'depth':depth,'nodes':list(nodes.values()),'edges':edges,'risks':risk_rows,'note':'Энэ граф нь өгөгдөлд байгаа холбоосыг харуулна. Нэр төстэй байдал дангаараа холбоо тогтоохгүй; эрсдэлийн дохио нь авлига, гэм бурууг нотлохгүй.'}
+
 
 @app.get('/api/v1/risks')
 def risks(db:Session=Depends(get_db)):
@@ -244,7 +350,7 @@ async def sync_tenders(data:SyncIn,db:Session=Depends(get_db)):
                 code=str(item.get('invitationNumber') or item.get('invitationId') or item.get('tenderCode') or '').strip()
                 title=str(item.get('tenderName') or '').strip()
                 if not code or not title:continue
-                payload={'external_id':code,'title':title,'source_url':('https://www.tender.gov.mn/mn/embed/'+str(item.get('invitationId'))) if item.get('invitationId') else 'https://www.tender.gov.mn/','organization_name':item.get('budgetEntityName') or item.get('budgetGovernerName'),'organization_official_id':item.get('registrationNumber') or item.get('budgetEntityCode'),'budget_amount':safe_float(item.get('totalBudget')),'procurement_method':item.get('ruleName') or item.get('tenderTypeName'),'published_at':item.get('publishDate') or item.get('publishedDate')}
+                payload={'external_id':code,'title':title,'source_url':('https://www.tender.gov.mn/mn/embed/'+str(item.get('invitationId'))) if item.get('invitationId') else 'https://www.tender.gov.mn/','organization_name':item.get('budgetEntityName') or item.get('budgetGovernerName'),'organization_official_id':item.get('registrationNumber') or item.get('budgetEntityCode'),'budget_amount':safe_float(item.get('totalBudget')),'procurement_method':item.get('ruleName') or item.get('tenderTypeName'),'published_at':item.get('publishDate') or item.get('publishedDate'),'upstream_invitation_id':str(item.get('invitationId') or '').strip() or None}
                 try:
                     _,changed=ingest_tender(db,payload);imported+=int(changed)
                 except ValueError:continue
