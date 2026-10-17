@@ -1,10 +1,11 @@
 from contextlib import asynccontextmanager
 import hashlib, json, re
 from difflib import SequenceMatcher
+from typing import Literal
 from fastapi import FastAPI, Depends, HTTPException, Header, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from sqlalchemy import select, or_, func, cast, Text
+from sqlalchemy import select, or_, func, cast, Text, case
 from sqlalchemy.orm import Session
 from .config import settings
 from .db import Base, engine, get_db
@@ -170,6 +171,114 @@ def tender_plan_list(limit:int=Query(default=30,ge=1,le=100),db:Session=Depends(
 def tenders(limit:int=Query(default=30,ge=1,le=100),db:Session=Depends(get_db)):
     return [tender_dict(t,db) for t in db.scalars(select(Tender).order_by(Tender.id.desc()).limit(limit))]
 
+@app.get('/api/v1/record-search')
+def record_search(
+    q: str = Query(default='', max_length=200),
+    registration: str = Query(default='', max_length=100),
+    company_name: str = Query(default='', max_length=200),
+    organization_name: str = Query(default='', max_length=200),
+    owner_name: str = Query(default='', max_length=200),
+    source_code: str = Query(default='', max_length=100),
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=30, ge=1, le=100),
+    db: Session = Depends(get_db),
+):
+    from .record_search import matches_record
+    query = select(SourceRecord, SourceRegistry).join(SourceRegistry, SourceRecord.source_id == SourceRegistry.id)
+    if source_code.strip(): query = query.where(SourceRegistry.code == source_code.strip())
+    items = []; total = 0; scanned = 0
+    # Stream the entire selected source set: do not silently restrict discovery to recent rows.
+    for record, source in db.execute(query.order_by(SourceRecord.id.desc()).execution_options(yield_per=200)):
+        scanned += 1
+        match = matches_record(record.raw_payload, q=q, registration=registration.strip(),
+                               company_name=company_name, organization_name=organization_name, owner_name=owner_name)
+        if match is None: continue
+        if offset <= total < offset + limit:
+            items.append({'id': record.id, 'external_id': record.external_id,
+                          'source_code': source.code, 'source_name': source.name,
+                          'source_url': record.source_url, 'sha256': record.sha256,
+                          'fetched_at': record.fetched_at, **match,
+                          'match_status': 'source_claim_requires_review'})
+        total += 1
+    return {'items': items, 'total': total, 'offset': offset, 'limit': limit,
+            'has_next': offset + limit < total, 'scanned_records': scanned,
+            'note': 'Регистрийг яг тааруулна; бусад талбарын үгсийг нэг талбарын утгад хайна. Эзэмшигчийн нэр нь эх баримтын мэдэгдэл бөгөөд ижил хүн эсвэл хүчинтэй эзэмшлийг дангаараа нотлохгүй. Бүх шүүлт AND нөхцөлтэй. Зөвхөн импортолсон мэдээллийн хамрах хүрээнд хайна.'}
+
+@app.get('/api/v1/procurement-analysis')
+def procurement_analysis(db: Session = Depends(get_db)):
+    """Describe imported procurement data; budget is never actual expenditure."""
+    total, known_bids, single_bids, known_budgets, budget_total, linked_awardees = db.execute(
+        select(func.count(Tender.id), func.count(Tender.bid_count),
+               func.sum(case((Tender.bid_count == 1, 1), else_=0)),
+               func.count(Tender.budget_amount), func.sum(Tender.budget_amount),
+               func.count(Tender.awardee_company_id))
+    ).one()
+    organizations = []
+    leaders = db.execute(
+        select(Organization.id, Organization.name, Organization.official_id,
+               func.count(Tender.id).label('tender_count'),
+               func.sum(Tender.budget_amount).label('budget_total'),
+               func.sum(case((Tender.bid_count == 1, 1), else_=0)).label('single_bid_count'))
+        .join(Tender, Tender.organization_id == Organization.id)
+        .group_by(Organization.id, Organization.name, Organization.official_id)
+        .order_by(func.count(Tender.id).desc(), Organization.id).limit(20)
+    ).all()
+    for row in leaders:
+        organizations.append(dict(row._mapping))
+    companies = []
+    leaders = db.execute(
+        select(Company.id, Company.name, Company.registration,
+               func.count(Tender.id).label('tender_count'),
+               func.sum(Tender.budget_amount).label('linked_tender_budget'))
+        .join(Tender, Tender.awardee_company_id == Company.id)
+        .where(Company.registration.is_not(None), Company.registration != '')
+        .group_by(Company.id, Company.name, Company.registration)
+        .order_by(func.count(Tender.id).desc(), Company.id).limit(20)
+    ).all()
+    for row in leaders:
+        item = dict(row._mapping)
+        item['share_of_linked_tenders_pct'] = round(row.tender_count / linked_awardees * 100, 1) if linked_awardees else None
+        companies.append(item)
+    return {
+        'coverage': {'tenders': total, 'known_bid_count': known_bids,
+                     'single_bid_count': single_bids or 0,
+                     'single_bid_share_pct': round((single_bids or 0) / known_bids * 100, 1) if known_bids else None,
+                     'known_budget_count': known_budgets, 'budget_total': budget_total,
+                     'linked_awardee_count': linked_awardees},
+        'organizations': organizations, 'companies': companies,
+        'methodology': 'Зөвхөн импортолсон тендерийн сан. Нэг саналын хувийг саналын тоо тодорхой тендерээс тооцно. Компанийн хувийг шалгарсан компанийн холбоостой тендерээс тооцно; регистргүй компанийг жагсаалтад нэгтгэхгүй. Төсөв нь бодит төлбөр, гэрээний дүн эсвэл компанийн орлого биш. Төвлөрөл нь зөрчлийн нотолгоо биш.',
+        'limitations': 'Төсвийн гүйлгээ, гэрээний гүйцэтгэл, аудит, өмчлөл, ХОМ болон улс төрийн санхүүжилтийг энэ шинжилгээ баталгаажуулаагүй. Сангийн хамрах хүрээнээс гадуурх мэдээллийг дүгнэхгүй.'
+    }
+
+@app.get('/api/v1/tender-explorer')
+def tender_explorer(
+    q: str = Query(default='', max_length=200),
+    budget: Literal['any', 'known', 'large', 'small'] = 'any',
+    competition: Literal['any', 'multiple', 'single', 'unknown'] = 'any',
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=30, ge=1, le=100),
+    db: Session = Depends(get_db),
+):
+    filters = []
+    if q.strip():
+        # Treat wildcard characters as literal query text.
+        escaped = q.strip().casefold().replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+        filters.append(or_(*[
+            column.ilike(f'%{escaped}%', escape='\\')
+            for column in (Tender.title, Tender.external_id)
+        ]))
+    if budget == 'known': filters.append(Tender.budget_amount.is_not(None))
+    elif budget == 'large': filters.append(Tender.budget_amount >= 100_000_000)
+    elif budget == 'small': filters.append(Tender.budget_amount < 100_000_000)
+    if competition == 'multiple': filters.append(Tender.bid_count >= 2)
+    elif competition == 'single': filters.append(Tender.bid_count == 1)
+    elif competition == 'unknown': filters.append(Tender.bid_count.is_(None))
+    total = db.scalar(select(func.count()).select_from(Tender).where(*filters)) or 0
+    rows = db.scalars(select(Tender).where(*filters).order_by(Tender.id.desc())
+                      .offset((page - 1) * page_size).limit(page_size)).all()
+    return {'items': [tender_dict(t, db) for t in rows], 'total': total,
+            'page': page, 'page_size': page_size, 'has_next': page * page_size < total}
+
 @app.get('/api/v1/tenders/{tid}')
 def tender(tid:int,db:Session=Depends(get_db)):
     obj=db.get(Tender,tid)
@@ -232,6 +341,7 @@ def investigation_entity_graph(entity_type:str,entity_id:int,depth:int=Query(def
         if not obj: return None
         rec=db.get(SourceRecord,source_id) if source_id else None
         return {'key':f'{t}:{i}','type':t,'id':i,'label':label,'details':detail,'source_record_id':source_id,'source_url':rec.source_url if rec else None,'sha256':rec.sha256 if rec else None}
+    from .record_search import record_fields
     start=node(entity_type,entity_id)
     if not start: raise HTTPException(404,'Entity not found')
     nodes={start['key']:start}; edges=[]; frontier=[(entity_type,entity_id,0)]; seen={(entity_type,entity_id)}
@@ -248,7 +358,7 @@ def investigation_entity_graph(entity_type:str,entity_id:int,depth:int=Query(def
         for rel in db.scalars(select(Relationship).where(or_(
             (Relationship.from_type==current_type)&(Relationship.from_id==current_id),
             (Relationship.to_type==current_type)&(Relationship.to_id==current_id)
-        )).limit(250)).all():
+        ), Relationship.verification_status != 'rejected').limit(250)).all():
             if rel.from_type==current_type and rel.from_id==current_id: other=(rel.to_type,rel.to_id); direction=(current_type,current_id,rel.to_type,rel.to_id)
             else: other=(rel.from_type,rel.from_id); direction=(rel.from_type,rel.from_id,current_type,current_id)
             a=node(direction[0],direction[1]); b=node(direction[2],direction[3])
@@ -278,6 +388,13 @@ def investigation_entity_graph(entity_type:str,entity_id:int,depth:int=Query(def
             if comp and comp.registration:
                 for s in db.scalars(select(TenderSupplier).where(TenderSupplier.supplier_register==comp.registration).limit(100)).all():
                     add_edge(node('company',current_id),node('supplier',s.id),'регистрийн дугаар ижил',1.0,'identifier_match',s.source_record_id,'Регистрийн дугаараар таарсан'); neighbors.append(('supplier',s.id))
+            if comp and comp.registration:
+                target = ''.join(comp.registration.split()).casefold()
+                for record in db.scalars(select(SourceRecord).execution_options(yield_per=200)):
+                    fields, _ = record_fields(record.raw_payload)
+                    if any(''.join(value.split()).casefold() == target for value in fields['registration']):
+                        add_edge(node('company',current_id),node('source_record',record.id),'регистрийн дугаар яг таарсан',1.0,'identifier_match',record.id,'Компанийн регистр эх баримтад яг таарсан; эзэмшигчийн нэрийг тусдаа эх сурвалжийн мэдэгдэл гэж үзнэ')
+                        neighbors.append(('source_record',record.id))
         elif current_type=='supplier':
             s=db.get(TenderSupplier,current_id)
             if s:
@@ -296,6 +413,13 @@ def investigation_entity_graph(entity_type:str,entity_id:int,depth:int=Query(def
         elif current_type=='source_record':
             current=db.get(SourceRecord,current_id)
             if current:
+                owner_fields, _ = record_fields(current.raw_payload)
+                for index, owner_name in enumerate(owner_fields['owner_name']):
+                    mention = {'key': f'owner_mention:{current.id}:{index}', 'type': 'owner_mention',
+                               'id': current.id, 'label': owner_name,
+                               'details': {'identity_status': 'unresolved_source_claim'},
+                               'source_record_id': current.id, 'source_url': current.source_url, 'sha256': current.sha256}
+                    add_edge(node('source_record',current.id),mention,'эх баримтад дурдсан эзэмшигч',0.5,'source_claim',current.id,'Эх сурвалжийн эзэмшлийн мэдэгдэл; нэр ижил хүнийг нэгтгээгүй, хүчинтэй эзэмшлийг тусад нь нягтална')
                 def flatten(obj):
                     values={}
                     if isinstance(obj,dict):
@@ -307,7 +431,8 @@ def investigation_entity_graph(entity_type:str,entity_id:int,depth:int=Query(def
                             elif v is not None: values[k]=v
                     return values
                 current_fields=normalize_record(flatten(current.raw_payload if isinstance(current.raw_payload,dict) else {}))
-                registration=str(current_fields.get('registration') or '').strip().upper()
+                registration_values = owner_fields['registration']
+                registration = re.sub(r'\s+', '', registration_values[0]).upper() if len(registration_values) == 1 else ''
                 tender_code=str(current_fields.get('tender_id') or '').strip()
                 contract_code=str(current_fields.get('contract_id') or '').strip()
                 if registration:
@@ -327,7 +452,8 @@ def investigation_entity_graph(entity_type:str,entity_id:int,depth:int=Query(def
                     for other in db.scalars(select(SourceRecord).where(SourceRecord.id!=current.id).order_by(SourceRecord.fetched_at.desc()).limit(1000)).all():
                         raw=other.raw_payload if isinstance(other.raw_payload,dict) else {}
                         fields=normalize_record(flatten(raw))
-                        same_reg=bool(registration and str(fields.get('registration') or '').strip().upper()==registration)
+                        other_fields, _ = record_fields(raw)
+                        same_reg = bool(registration and any(re.sub(r'\s+', '', value).upper() == registration for value in other_fields['registration']))
                         same_tender=bool(tender_code and str(fields.get('tender_id') or '').strip()==tender_code)
                         same_contract=bool(contract_code and str(fields.get('contract_id') or '').strip()==contract_code)
                         if not (same_reg or same_tender or same_contract): continue
@@ -338,7 +464,7 @@ def investigation_entity_graph(entity_type:str,entity_id:int,depth:int=Query(def
             if other not in seen and node(*other):
                 seen.add(other);frontier.append((other[0],other[1],level+1))
     risk_rows=[{'id':r.id,'rule_code':r.rule_code,'title':r.title,'severity':r.severity,'confidence':r.confidence,'explanation':r.explanation,'limitations':r.limitations,'evidence_id':r.evidence_id,'review_status':r.review_status} for r in db.scalars(select(RiskFinding).where(RiskFinding.entity_type==entity_type,RiskFinding.entity_id==entity_id).limit(50))]
-    return {'root':start,'depth':depth,'nodes':list(nodes.values()),'edges':edges,'risks':risk_rows,'note':'Энэ граф нь өгөгдөлд байгаа холбоосыг харуулна. Нэр төстэй байдал дангаараа холбоо тогтоохгүй; эрсдэлийн дохио нь авлига, гэм бурууг нотлохгүй.'}
+    return {'root':start,'depth':depth,'nodes':list(nodes.values()),'edges':edges,'risks':risk_rows,'note':'Граф нь гүн болон салааллын хязгаартай хайгуулын харагдац; бүх холбоог бүрэн хамарсан дүгнэлт биш. Энэ граф нь өгөгдөлд байгаа холбоосыг харуулна. Нэр төстэй байдал дангаараа холбоо тогтоохгүй; эрсдэлийн дохио нь авлига, гэм бурууг нотлохгүй.'}
 
 
 @app.get('/api/v1/risks')

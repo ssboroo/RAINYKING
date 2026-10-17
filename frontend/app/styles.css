@@ -9,3 +9,7 @@
 
 /* Name-resolution candidate quality */
 .emptyHint{font-size:11px;color:#91a2b5;padding:14px 0}.sectionTitle{margin-top:24px}.methodNote{overflow-wrap:anywhere}
+
+.pagination{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-top:24px}.pagination button:disabled{opacity:.45;cursor:not-allowed}
+
+.recordFilters{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;margin-bottom:16px}.recordFilters label{display:flex;flex-direction:column;gap:8px;font-size:13px}.recordFilters input{font:inherit;border:1px solid #dbe2e8;border-radius:10px;padding:12px;width:100%;box-sizing:border-box}.evidenceResult details{overflow-wrap:anywhere}.gridCards{margin-top:20px}
