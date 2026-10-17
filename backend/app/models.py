@@ -57,6 +57,31 @@ class Tender(Base):
     published_at: Mapped[str|None] = mapped_column(String(30), nullable=True)
     source_record_id: Mapped[int] = mapped_column(ForeignKey('source_records.id'))
 
+class TenderPlan(Base):
+    __tablename__='tender_plans'
+    id: Mapped[int] = mapped_column(primary_key=True)
+    external_id: Mapped[str] = mapped_column(String(180), unique=True, index=True)
+    title: Mapped[str] = mapped_column(String(600), index=True)
+    tender_code: Mapped[str|None] = mapped_column(String(180), nullable=True, index=True)
+    tender_year: Mapped[int|None] = mapped_column(Integer, nullable=True, index=True)
+    budget_amount: Mapped[float|None] = mapped_column(Float, nullable=True)
+    organization_name: Mapped[str|None] = mapped_column(String(300), nullable=True)
+    source_record_id: Mapped[int] = mapped_column(ForeignKey('source_records.id'))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+class TenderSupplier(Base):
+    __tablename__='tender_suppliers'
+    id: Mapped[int] = mapped_column(primary_key=True)
+    external_id: Mapped[str] = mapped_column(String(240), unique=True, index=True)
+    invitation_id: Mapped[str] = mapped_column(String(180), index=True)
+    supplier_name: Mapped[str] = mapped_column(String(300))
+    supplier_register: Mapped[str|None] = mapped_column(String(80), nullable=True, index=True)
+    offered_price: Mapped[float|None] = mapped_column(Float, nullable=True)
+    status: Mapped[str|None] = mapped_column(String(160), nullable=True)
+    comment: Mapped[str|None] = mapped_column(Text, nullable=True)
+    source_record_id: Mapped[int] = mapped_column(ForeignKey('source_records.id'))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
 class Relationship(Base):
     __tablename__='relationships'
     id: Mapped[int] = mapped_column(primary_key=True)
