@@ -1,0 +1,19 @@
+name: RAINY TRANSPARENCY CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r backend/requirements.txt
+      - run: python -m compileall -q backend/app
+      - run: pytest -q
+        env:
+          PYTHONPATH: backend
