@@ -1,0 +1,4 @@
+[
+  {"external_id":"DEMO-TENDER-001","title":"ЖИШЭЭ ӨГӨГДӨЛ — тоног төхөөрөмжийн худалдан авалт","source_url":"https://opendata.tender.gov.mn/","organization_name":"ЖИШЭЭ — захиалагч байгууллага","company_name":"ЖИШЭЭ — оролцогч компани","budget_amount":10000000,"bid_count":1,"procurement_method":"DEMO","published_at":"2026-01-01"},
+  {"external_id":"DEMO-TENDER-002","title":"ЖИШЭЭ ӨГӨГДӨЛ — засварын үйлчилгээ","source_url":"https://opendata.tender.gov.mn/","organization_name":"ЖИШЭЭ — өөр захиалагч","budget_amount":7500000,"bid_count":3,"published_at":"2026-02-01"}
+]
