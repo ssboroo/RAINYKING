@@ -28,3 +28,13 @@ No portal login is bypassed and no HTML scraping is presented as an official API
 - `POST /api/v1/admin/sync/opendata-resource` JSON `{"dataset_id":"CKAN_PACKAGE_ID","resource_id":null,"max_rows":500,"max_bytes":5000000}` — CSV/JSON resource-ийн мөрүүдийг хадгална. resource_id өгөхгүй бол эхний CSV/JSON resource сонгоно.
 - Resource зөвхөн opendata.gov.mn домэйны HTTPS хаягтай, 5 MB хүртэл, 500 мөр хүртэл байна.
 - Шилэн данс, аудит, шүүх, legalinfo, OpenData.mn-ийн хувьд албан ёсны API эсвэл download resource-ийн формат бүрийг баталгаажуулах хүртэл порталын холбоос/төлөв бүртгэнэ. Нэвтрэлтийг тойрохгүй.
+
+
+## Эх сурвалж илрүүлэх, олон формат татах, мониторинг
+- POST /api/v1/admin/sources/inspect — бүртгэлтэй эх сурвалжийн нийтийн HTTPS URL-ийн формат, MIME төрөл, хэмжээ, SHA-256, жишээг шалгана.
+- POST /api/v1/admin/sources/sync-public — JSON/CSV/XLSX/PDF/нийтийн HTML хүснэгт болон текст татаж, raw + стандартчилсан мөрийг хадгална.
+- GET /api/v1/admin/source-metrics — эх сурвалж тус бүрийн нийт бүртгэл, сүүлийн амжилт, алдааг харуулна.
+- GET /api/v1/admin/sync-runs — таталтын түүх, тоо, хэмжээ, MIME, хэш, алдааг харуулна.
+- HTTP сүлжээний алдаанд 3 удаа хүртэл retry/backoff хийнэ. Зөвшөөрсөн домэйн, HTTPS, 5 MB болон 500 мөрийн хязгаар үйлчилнэ. Login/CAPTCHA тойрохгүй.
+- Монгол/англи толгой нэрээс нэр, регистр, байгууллага, тендер/гэрээний дугаар, төсөв, огноог стандартчилна; raw эх өгөгдлийг хамт хадгална. Ижил нэрээр шууд нэгтгэхгүй.
+- Хязгаарлалт: PDF нь текстэн PDF байх шаардлагатай (OCR байхгүй); XLSX active worksheet-ийн эхний мөрийг header гэж үзнэ; сайт бүрийн API/schema өөр тул эх сурвалж тус бүр дээр URL-ийг эхлээд inspect хийж баталгаажуулна.

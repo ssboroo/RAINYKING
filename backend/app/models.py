@@ -139,3 +139,19 @@ class AuditLog(Base):
     action: Mapped[str] = mapped_column(String(80))
     details: Mapped[dict] = mapped_column(JSON)
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class SourceSyncRun(Base):
+    __tablename__='source_sync_runs'
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source_code: Mapped[str] = mapped_column(String(90), index=True)
+    source_url: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(20), default='running', index=True)
+    records_seen: Mapped[int] = mapped_column(Integer, default=0)
+    records_saved: Mapped[int] = mapped_column(Integer, default=0)
+    bytes_downloaded: Mapped[int] = mapped_column(Integer, default=0)
+    content_type: Mapped[str|None] = mapped_column(String(200), nullable=True)
+    content_sha256: Mapped[str|None] = mapped_column(String(64), nullable=True)
+    error_message: Mapped[str|None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    finished_at: Mapped[datetime|None] = mapped_column(DateTime(timezone=True), nullable=True)

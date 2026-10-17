@@ -7,10 +7,10 @@ from sqlalchemy import select, or_, func
 from sqlalchemy.orm import Session
 from .config import settings
 from .db import Base, engine, get_db
-from .models import SourceRegistry, SourceRecord, Company, Organization, Tender, TenderPlan, TenderSupplier, Evidence, RiskFinding, ReviewAction, AuditLog, Relationship
+from .models import SourceRegistry, SourceRecord, Company, Organization, Tender, TenderPlan, TenderSupplier, Evidence, RiskFinding, ReviewAction, AuditLog, Relationship, SourceSyncRun
 from .services import ingest_tender, evaluate_r01
-from .connectors import connector_catalog, tender_invitations, tender_plans, tender_suppliers, ckan_package_search, ckan_package_show, fetch_public_resource, ConnectorError
-from .integrations import upsert_connector_registry, catalog_status, mark_result
+from .connectors import connector_catalog, tender_invitations, tender_plans, tender_suppliers, ckan_package_search, ckan_package_show, fetch_public_resource, inspect_public_source, fetch_registered_public_resource, validate_public_url, ConnectorError
+from .integrations import upsert_connector_registry, catalog_status, mark_result\nfrom .normalization import normalize_record
 
 SOURCE_SEEDS = [
     ('tender_official','Тендерийн Open Data API','https://opendata.tender.gov.mn/','bearer_api'),
@@ -320,3 +320,67 @@ def safe_float(value):
     if value is None or value=='':return None
     try:return float(str(value).replace(',',''))
     except (ValueError,TypeError):return None
+
+
+class SourceInspectIn(BaseModel):
+    source_code: str = Field(min_length=1,max_length=90)
+    url: str = Field(min_length=10,max_length=2000)
+class PublicSourceSyncIn(BaseModel):
+    source_code: str = Field(min_length=1,max_length=90)
+    url: str = Field(min_length=10,max_length=2000)
+    max_rows: int = Field(default=500,ge=1,le=500)
+    max_bytes: int = Field(default=5000000,ge=1000,le=5000000)
+
+@app.post('/api/v1/admin/sources/inspect',dependencies=[Depends(require_admin)])
+async def inspect_source(data:SourceInspectIn,db:Session=Depends(get_db)):
+    source=db.scalar(select(SourceRegistry).where(SourceRegistry.code==data.source_code))
+    if not source:raise HTTPException(404,'Эх сурвалж бүртгэлгүй байна.')
+    try:return {'source_code':data.source_code,**(await inspect_public_source(data.url))}
+    except ConnectorError as exc:
+        mark_result(db,data.source_code,str(exc));raise HTTPException(502,str(exc))
+
+@app.post('/api/v1/admin/sources/sync-public',dependencies=[Depends(require_admin)])
+async def sync_public_source(data:PublicSourceSyncIn,db:Session=Depends(get_db)):
+    source=db.scalar(select(SourceRegistry).where(SourceRegistry.code==data.source_code))
+    if not source:raise HTTPException(404,'Эх сурвалж бүртгэлгүй байна.')
+    try:
+        host=validate_public_url(data.url); registered=validate_public_url(source.url)
+        if host!=registered and not host.endswith('.'+registered):raise ConnectorError('URL бүртгэсэн эх сурвалжийн домэйнтэй таарахгүй.')
+    except ConnectorError as exc:raise HTTPException(422,str(exc))
+    run=SourceSyncRun(source_code=data.source_code,source_url=data.url,status='running');db.add(run);db.commit();db.refresh(run)
+    try:
+        fmt,rows,meta=await fetch_registered_public_resource(data.url,max_bytes=data.max_bytes,max_rows=data.max_rows)
+        for index,row in enumerate(rows,1):
+            norm=normalize_record(row)
+            identity=norm.get('registration') or norm.get('tender_id') or norm.get('contract_id') or norm.get('title') or ''
+            stable=hashlib.sha256((str(identity).casefold()+'|'+str(index)).encode()).hexdigest()[:32]
+            store_source_payload(db,'public:'+data.source_code+':'+stable,{'kind':'public_source_record','format':fmt,'row_number':index,'normalized':norm,'raw':row,'content_sha256':meta['sha256']},source_url=meta['final_url'],source_code=data.source_code)
+        from datetime import datetime,timezone
+        run.status='success';run.records_seen=len(rows);run.records_saved=len(rows);run.bytes_downloaded=meta['bytes_downloaded'];run.content_type=meta['content_type'];run.content_sha256=meta['sha256'];run.finished_at=datetime.now(timezone.utc)
+        db.commit();mark_result(db,data.source_code)
+        return {'run_id':run.id,'source_code':data.source_code,'status':'success','format':fmt,'records_seen':len(rows),'records_saved':len(rows),'bytes_downloaded':meta['bytes_downloaded'],'content_sha256':meta['sha256'],'source_url':meta['final_url'],'note':'Raw мөр, стандартчилсан талбар, эх URL, SHA-256 хадгаллаа.'}
+    except ConnectorError as exc:
+        from datetime import datetime,timezone
+        db.rollback();failed=db.get(SourceSyncRun,run.id)
+        if failed:failed.status='failed';failed.error_message=str(exc)[:2000];failed.finished_at=datetime.now(timezone.utc);db.commit()
+        mark_result(db,data.source_code,str(exc));raise HTTPException(502,str(exc))
+    except Exception as exc:
+        from datetime import datetime,timezone
+        db.rollback();failed=db.get(SourceSyncRun,run.id)
+        if failed:failed.status='failed';failed.error_message=type(exc).__name__;failed.finished_at=datetime.now(timezone.utc);db.commit()
+        mark_result(db,data.source_code,type(exc).__name__);raise HTTPException(500,'Эх сурвалж боловсруулах үед дотоод алдаа гарлаа.')
+
+@app.get('/api/v1/admin/sync-runs',dependencies=[Depends(require_admin)])
+def sync_runs(limit:int=Query(default=50,ge=1,le=200),source_code:str|None=None,db:Session=Depends(get_db)):
+    stmt=select(SourceSyncRun).order_by(SourceSyncRun.id.desc()).limit(limit)
+    if source_code:stmt=select(SourceSyncRun).where(SourceSyncRun.source_code==source_code).order_by(SourceSyncRun.id.desc()).limit(limit)
+    return [{'id':r.id,'source_code':r.source_code,'source_url':r.source_url,'status':r.status,'records_seen':r.records_seen,'records_saved':r.records_saved,'bytes_downloaded':r.bytes_downloaded,'content_type':r.content_type,'content_sha256':r.content_sha256,'error_message':r.error_message,'started_at':r.started_at,'finished_at':r.finished_at} for r in db.scalars(stmt)]
+
+@app.get('/api/v1/admin/source-metrics',dependencies=[Depends(require_admin)])
+def source_metrics(db:Session=Depends(get_db)):
+    output=[]
+    for s in db.scalars(select(SourceRegistry)).all():
+        count=db.scalar(select(func.count()).select_from(SourceRecord).where(SourceRecord.source_id==s.id)) or 0
+        latest=db.scalar(select(SourceSyncRun).where(SourceSyncRun.source_code==s.code).order_by(SourceSyncRun.id.desc()).limit(1))
+        output.append({'code':s.code,'name':s.name,'url':s.url,'records_total':count,'last_success_at':s.last_success_at,'last_error':s.last_error,'latest_run_status':latest.status if latest else None,'latest_run_at':latest.finished_at if latest else None,'latest_records_saved':latest.records_saved if latest else 0,'latest_error':latest.error_message if latest else None})
+    return output
