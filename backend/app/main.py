@@ -124,6 +124,26 @@ def search(q:str=Query(min_length=1,max_length=200),db:Session=Depends(get_db)):
                 score=max(similarity,overlap*0.82)
                 if score>=0.62:
                     candidates.append({'entity_type':entity_type,'id':getattr(obj,id_key),'name':label,'identifier':getattr(obj,identifier_key,None),'similarity':round(min(score,1.0),3),'match_kind':'approximate_name_only','investigation_allowed':entity_type in ('company','organization','supplier','tender_plan')})
+        # Also scan recent source documents using their normalized name fields so
+        # public registry rows can be found before they are resolved into a Company.
+        recent_records=db.scalars(select(SourceRecord).order_by(SourceRecord.fetched_at.desc()).limit(1500)).all()
+        for record in recent_records:
+            payload=record.raw_payload if isinstance(record.raw_payload,dict) else {}
+            raw=payload.get('raw') if isinstance(payload.get('raw'),dict) else payload
+            normalized=payload.get('normalized') if isinstance(payload.get('normalized'),dict) else normalize_record(raw if isinstance(raw,dict) else {})
+            label=normalized.get('name') or normalized.get('organization') or normalized.get('title')
+            if not label:
+                continue
+            normalized_label=normalized_entity_name(str(label))
+            if not normalized_label or normalized_label==normalized_query:
+                continue
+            similarity=SequenceMatcher(None,normalized_query,normalized_label).ratio()
+            q_tokens=set(normalized_query.split()); n_tokens=set(normalized_label.split())
+            overlap=len(q_tokens & n_tokens)/max(1,len(q_tokens))
+            score=max(similarity,overlap*0.82)
+            if score>=0.62:
+                source=db.get(SourceRegistry,record.source_id)
+                candidates.append({'entity_type':'source_record','id':record.id,'name':str(label),'identifier':record.external_id,'similarity':round(min(score,1.0),3),'match_kind':'source_document_name_only','source_name':source.name if source else None,'investigation_allowed':True})
         candidates.sort(key=lambda x:(x['similarity'],bool(x['identifier'])),reverse=True)
         seen=set()
         for candidate in candidates:
