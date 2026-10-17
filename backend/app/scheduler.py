@@ -20,10 +20,17 @@ def source_configs():
     return items
 
 def stable_record_identity(normalized, row):
-    strong=normalized.get('registration') or normalized.get('tender_id') or normalized.get('contract_id')
-    if strong: return hashlib.sha256(str(strong).casefold().strip().encode('utf-8')).hexdigest()[:32]
-    canonical=json.dumps(row,ensure_ascii=False,sort_keys=True,separators=(',',':'))
-    return hashlib.sha256(canonical.encode('utf-8')).hexdigest()[:32]
+    # Keep row identity scoped to a procurement/contract when those fields exist.
+    tender = normalized.get("tender_id") or row.get("invitationId") or row.get("invitation_id") or row.get("Тендерийн дугаар")
+    contract = normalized.get("contract_id") or row.get("contractId") or row.get("contract_id")
+    registration = normalized.get("registration") or row.get("supplierRegister") or row.get("supplier_register")
+    if tender or contract:
+        identity = "|".join(str(v).casefold().strip() for v in (tender or "", contract or "", registration or "") if v)
+    elif registration:
+        identity = str(registration).casefold().strip()
+    else:
+        identity = json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()[:32]
 
 def store_row(db, source, external_id, payload, source_url):
     encoded=json.dumps(payload,ensure_ascii=False,sort_keys=True,separators=(",",":")).encode("utf-8")
@@ -67,7 +74,7 @@ async def sync_one(config):
                 identity=normalized.get("registration") or normalized.get("tender_id") or normalized.get("contract_id") or normalized.get("title") or ""
                 stable=stable_record_identity(normalized,row)
                 payload={"kind":"public_source_record","format":fmt,"row_number":index,"normalized":normalized,"raw":row,"content_sha256":meta["sha256"]}
-                store_row(db,source,"scheduled:"+stable,payload,meta["final_url"])
+                store_row(db,source,"public:"+stable,payload,meta["final_url"])
             run.status="success";run.records_seen=len(rows);run.records_saved=len(rows)
             run.bytes_downloaded=meta["bytes_downloaded"];run.content_type=meta["content_type"]
             run.content_sha256=meta["sha256"];run.finished_at=datetime.now(timezone.utc)
