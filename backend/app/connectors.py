@@ -105,7 +105,7 @@ def parse_public_payload(raw: bytes, content_type: str, url: str, max_rows: int=
         else: rows=[{"value":obj}]
         return "json",[r if isinstance(r,dict) else {"value":r} for r in rows[:max_rows]]
     if "csv" in content_type or clean.endswith(".csv"):
-        try: dialect=csv.Sniffer().sniff(text[:4096],delimiters=",;\\t|")
+        try: dialect=csv.Sniffer().sniff(text[:4096],delimiters=",;\t|")
         except csv.Error: dialect=csv.excel
         return "csv",list(csv.DictReader(io.StringIO(text),dialect=dialect))[:max_rows]
     if "spreadsheetml" in content_type or "excel" in content_type or clean.endswith((".xlsx",".xlsm")):

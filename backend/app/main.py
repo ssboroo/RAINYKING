@@ -336,7 +336,10 @@ class PublicSourceSyncIn(BaseModel):
 async def inspect_source(data:SourceInspectIn,db:Session=Depends(get_db)):
     source=db.scalar(select(SourceRegistry).where(SourceRegistry.code==data.source_code))
     if not source:raise HTTPException(404,'Эх сурвалж бүртгэлгүй байна.')
-    try:return {'source_code':data.source_code,**(await inspect_public_source(data.url))}
+    try:
+        host=validate_public_url(data.url); registered=validate_public_url(source.url)
+        if host!=registered and not host.endswith('.'+registered):raise ConnectorError('URL бүртгэсэн эх сурвалжийн домэйнтэй таарахгүй.')
+        return {'source_code':data.source_code,**(await inspect_public_source(data.url))}
     except ConnectorError as exc:
         mark_result(db,data.source_code,str(exc));raise HTTPException(502,str(exc))
 

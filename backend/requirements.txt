@@ -4,4 +4,7 @@ sqlalchemy==2.0.36
 psycopg[binary]==3.2.3
 pydantic-settings==2.7.0
 httpx==0.28.1
-pytest==8.3.4\nbeautifulsoup4==4.12.3\nopenpyxl==3.1.5\npypdf==5.1.0\n
+pytest==8.3.4
+beautifulsoup4==4.12.3
+openpyxl==3.1.5
+pypdf==5.1.0
