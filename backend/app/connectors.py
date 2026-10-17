@@ -1,7 +1,59 @@
 """Official-source adapters. Only documented/authorized APIs are called; no login scraping."""
-import httpx
+import httpx, csv, io, json
+from urllib.parse import urlparse
 from .config import settings
 TENDER_API = "https://opendata.tender.gov.mn/api"
+GOV_CKAN_API = "https://opendata.gov.mn/api/3/action"
+async def public_json(url: str, params: dict | None = None):
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(35.0, connect=10.0), follow_redirects=True, headers={"User-Agent":"RAINY-TRANSPARENCY/1.0"}) as client:
+            response = await client.get(url, params=params)
+            response.raise_for_status()
+            return response.json()
+    except httpx.HTTPError as exc:
+        raise ConnectorError(f"Нээлттэй өгөгдлийн хүсэлт амжилтгүй: {type(exc).__name__}") from exc
+    except ValueError as exc:
+        raise ConnectorError("Эх сурвалж JSON бус хариу буцаалаа.") from exc
+
+async def ckan_package_search(q: str = "*", start: int = 0, rows: int = 100) -> dict:
+    result = await public_json(GOV_CKAN_API + "/package_search", {"q":q,"start":start,"rows":min(max(rows,1),100)})
+    if not result.get("success"): raise ConnectorError("OpenData.gov.mn CKAN package_search амжилтгүй.")
+    return result.get("result",{})
+
+async def ckan_package_show(package_id: str) -> dict:
+    result = await public_json(GOV_CKAN_API + "/package_show", {"id":package_id})
+    if not result.get("success"): raise ConnectorError("OpenData.gov.mn CKAN package_show амжилтгүй.")
+    return result.get("result",{})
+
+async def fetch_public_resource(url: str, max_bytes: int = 5_000_000, max_rows: int = 500) -> list[dict]:
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or not parsed.hostname or not (parsed.hostname == "opendata.gov.mn" or parsed.hostname.endswith(".opendata.gov.mn")):
+        raise ConnectorError("Зөвхөн opendata.gov.mn домэйны HTTPS resource зөвшөөрнө.")
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(45.0, connect=10.0), follow_redirects=True, headers={"User-Agent":"RAINY-TRANSPARENCY/1.0"}) as client:
+            async with client.stream("GET", url) as response:
+                response.raise_for_status()
+                chunks=[]; size=0
+                async for chunk in response.aiter_bytes():
+                    size += len(chunk)
+                    if size > max_bytes: raise ConnectorError("Resource хэмжээний хязгаараас их байна.")
+                    chunks.append(chunk)
+                content_type=response.headers.get("content-type","").lower()
+                raw=b"".join(chunks)
+    except httpx.HTTPError as exc:
+        raise ConnectorError(f"Resource татахад алдаа: {type(exc).__name__}") from exc
+    text=raw.decode("utf-8-sig",errors="replace")
+    if "json" in content_type or url.lower().split("?")[0].endswith(".json"):
+        obj=json.loads(text)
+        if isinstance(obj,list): return [x if isinstance(x,dict) else {"value":x} for x in obj[:max_rows]]
+        if isinstance(obj,dict):
+            for key in ("data","records","results","result"):
+                if isinstance(obj.get(key),list): return [x if isinstance(x,dict) else {"value":x} for x in obj[key][:max_rows]]
+            return [obj]
+    if "csv" in content_type or url.lower().split("?")[0].endswith(".csv"):
+        return list(csv.DictReader(io.StringIO(text)))[:max_rows]
+    raise ConnectorError("Resource CSV/JSON биш байна; тохирох parser шаардлагатай.")
+
 class ConnectorError(RuntimeError): pass
 async def tender_post(path: str, params: dict) -> dict:
     if not settings.tender_bearer_token:
@@ -32,7 +84,7 @@ def connector_catalog():
     return [
       {"code":"tender_official","name":"Төрийн худалдан авах ажиллагааны REST API","kind":"official_api","docs":"https://opendata.tender.gov.mn/","base_url":TENDER_API,"auth":"Bearer token from procurement authority","automated":True,"required_secret":"TENDER_BEARER_TOKEN","datasets":["invitation","plan","suppliers","committee"],"note":"Токен шаардлагатай; committee endpoint нь хувь хүний мэдээлэл агуулж болох тул тусгай зөвшөөрөлгүйгээр импортлохгүй."},
       {"code":"shilendans","name":"Шилэн данс нээлттэй өгөгдөл","kind":"open_portal","docs":"https://shilendans.gov.mn/openData","base_url":"https://shilendans.gov.mn/openData","auth":"Public portal; machine-readable endpoint/API schema not verified","automated":False,"required_secret":None,"datasets":["budget","budget_execution","investment","expense_transactions","income_transactions","SOE_targets"],"note":"Албан ёсны портал дээр өгөгдлийн маягтууд нийтлэгдсэн. Баталгаатай API endpoint/schema олдоогүй."},
-      {"code":"government_opendata","name":"Засгийн газрын нээлттэй өгөгдлийн портал","kind":"open_data_catalog","docs":"https://opendata.gov.mn/","base_url":"https://opendata.gov.mn/","auth":"Dataset-specific","automated":False,"required_secret":None,"datasets":["dataset_catalog","organization_datasets"],"note":"Dataset тус бүрийн API/download холбоос, лиценз, schema-г нягталсны дараа холбох."},
+      {"code":"government_opendata","name":"Засгийн газрын нээлттэй өгөгдлийн портал","kind":"ckan_public_api","docs":"https://opendata.gov.mn/","base_url":GOV_CKAN_API,"auth":"Public CKAN API; resource/license-specific","automated":True,"required_secret":None,"datasets":["dataset_catalog","dataset_resources","public_csv_json_records"],"note":"CKAN package_search/package_show нийтийн API; CSV/JSON resource таталт 5 MB болон 500 мөрийн хамгаалалттай."},
       {"code":"opendata_mn","name":"OpenData.mn","kind":"open_data_catalog","docs":"https://opendata.mn/","base_url":"https://opendata.mn/","auth":"Dataset-specific","automated":False,"required_secret":None,"datasets":["public_datasets"],"note":"Портал REST API боломж дурдсан боловч нийтэд ил API endpoint/schema тодорхой бус."},
       {"code":"audit","name":"Төрийн аудитын тайлангийн портал","kind":"portal","docs":"https://open.audit.mn/","base_url":"https://open.audit.mn/","auth":"Portal login shown","automated":False,"required_secret":None,"datasets":["audit_reports"],"note":"Нээлттэй API баримт олдоогүй; нэвтрэлтийг тойрохгүй."},
       {"code":"courts","name":"Шүүхийн шийдвэрийн цахим сан","kind":"portal","docs":"https://shuukh.mn/","base_url":"https://shuukh.mn/","auth":"Public portal; API schema not verified","automated":False,"required_secret":None,"datasets":["published_decisions"],"note":"Нийтийн шийдвэр, хувийн мэдээллийн хамгаалалт, таталтын нөхцөлийг шалгана."},
