@@ -193,10 +193,10 @@ async def sync_tenders(data:SyncIn,db:Session=Depends(get_db)):
             body=await tender_invitations(page,data.per_page,data.year);pages+=1
             records=body.get('data',[]);total=int(body.get('total') or 0)
             for item in records:
-                code=str(item.get('tenderCode') or item.get('invitationNumber') or item.get('invitationId') or '').strip()
+                code=str(item.get('invitationNumber') or item.get('invitationId') or item.get('tenderCode') or '').strip()
                 title=str(item.get('tenderName') or '').strip()
                 if not code or not title:continue
-                payload={'external_id':code,'title':title,'source_url':'https://www.tender.gov.mn/','organization_name':item.get('budgetEntityName') or item.get('budgetGovernerName'),'organization_official_id':item.get('registrationNumber') or item.get('budgetEntityCode'),'budget_amount':safe_float(item.get('totalBudget')),'procurement_method':item.get('ruleName') or item.get('tenderTypeName'),'published_at':item.get('publishDate') or item.get('publishedDate')}
+                payload={'external_id':code,'title':title,'source_url':('https://www.tender.gov.mn/mn/embed/'+str(item.get('invitationId'))) if item.get('invitationId') else 'https://www.tender.gov.mn/','organization_name':item.get('budgetEntityName') or item.get('budgetGovernerName'),'organization_official_id':item.get('registrationNumber') or item.get('budgetEntityCode'),'budget_amount':safe_float(item.get('totalBudget')),'procurement_method':item.get('ruleName') or item.get('tenderTypeName'),'published_at':item.get('publishDate') or item.get('publishedDate')}
                 try:
                     _,changed=ingest_tender(db,payload);imported+=int(changed)
                 except ValueError:continue
@@ -217,7 +217,7 @@ async def sync_plans(data:SyncIn,db:Session=Depends(get_db)):
                 ext=str(item.get('tenderId') or item.get('invitationId') or item.get('tenderCode') or '').strip()
                 title=str(item.get('tenderName') or '').strip()
                 if not ext or not title: continue
-                rec=store_source_payload(db,'plan:'+ext,item)
+                rec=store_source_payload(db,'plan:'+ext,item,source_url=('https://www.tender.gov.mn/mn/embed/'+str(item.get('tenderId') or item.get('invitationId'))) if (item.get('tenderId') or item.get('invitationId')) else 'https://www.tender.gov.mn/')
                 row=db.scalar(select(TenderPlan).where(TenderPlan.external_id==ext))
                 values={'title':title,'tender_code':str(item.get('tenderCode') or '').strip() or None,'tender_year':safe_int(item.get('tenderYear')),'budget_amount':safe_float(item.get('totalBudget') or item.get('yearBudget')),'organization_name':item.get('budgetEntityName') or item.get('budgetGovernerName'),'source_record_id':rec.id}
                 if row:
@@ -243,8 +243,8 @@ async def sync_suppliers(data:SupplierSyncIn,db:Session=Depends(get_db)):
                 name=str(item.get('supplierName') or '').strip()
                 if not name: continue
                 invitation=str(item.get('invitationId') or data.invitation_id)
-                external=f'{invitation}:{reg or name.casefold()}'
-                rec=store_source_payload(db,'supplier:'+external,item)
+                external=f'{invitation}:{reg}' if reg else f'{invitation}:name:{hashlib.sha256(name.casefold().encode()).hexdigest()[:24]}'
+                rec=store_source_payload(db,'supplier:'+external,item,source_url=('https://www.tender.gov.mn/mn/embed/'+str(invitation)))
                 row=db.scalar(select(TenderSupplier).where(TenderSupplier.external_id==external))
                 values={'invitation_id':invitation,'supplier_name':name,'supplier_register':reg,'offered_price':safe_float(item.get('openedBidderPrice')),'status':item.get('wfmStatusName'),'comment':item.get('commentText'),'source_record_id':rec.id}
                 if row:
