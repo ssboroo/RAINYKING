@@ -19,7 +19,13 @@ def source_configs():
         raise ValueError("AUTO_SYNC_SOURCES must be a JSON array")
     return items
 
-def stable_record_identity(normalized, row):\n    strong=normalized.get('registration') or normalized.get('tender_id') or normalized.get('contract_id')\n    if strong: return hashlib.sha256(str(strong).casefold().strip().encode('utf-8')).hexdigest()[:32]\n    canonical=json.dumps(row,ensure_ascii=False,sort_keys=True,separators=(',',':'))\n    return hashlib.sha256(canonical.encode('utf-8')).hexdigest()[:32]\n\ndef store_row(db, source, external_id, payload, source_url):
+def stable_record_identity(normalized, row):
+    strong=normalized.get('registration') or normalized.get('tender_id') or normalized.get('contract_id')
+    if strong: return hashlib.sha256(str(strong).casefold().strip().encode('utf-8')).hexdigest()[:32]
+    canonical=json.dumps(row,ensure_ascii=False,sort_keys=True,separators=(',',':'))
+    return hashlib.sha256(canonical.encode('utf-8')).hexdigest()[:32]
+
+def store_row(db, source, external_id, payload, source_url):
     encoded=json.dumps(payload,ensure_ascii=False,sort_keys=True,separators=(",",":")).encode("utf-8")
     digest=hashlib.sha256(encoded).hexdigest()
     record=db.scalar(select(SourceRecord).where(SourceRecord.source_id==source.id,SourceRecord.external_id==external_id,SourceRecord.sha256==digest))

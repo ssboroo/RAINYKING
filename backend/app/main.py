@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
-import hashlib, json, re\nfrom difflib import SequenceMatcher
+import hashlib, json, re
+from difflib import SequenceMatcher
 from fastapi import FastAPI, Depends, HTTPException, Header, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -422,14 +423,16 @@ def public_relationships(verification_status:str='verified',limit:int=Query(defa
     if verification_status not in ('verified','pending_review','rejected'): raise HTTPException(422,'Invalid status')
     rows=db.scalars(select(Relationship).where(Relationship.verification_status==verification_status).order_by(Relationship.id.desc()).limit(limit))
     return [{'id':x.id,'from_type':x.from_type,'from_id':x.from_id,'to_type':x.to_type,'to_id':x.to_id,'relationship_type':x.relationship_type,'confidence':x.confidence,'verification_status':x.verification_status,'source_record_id':x.source_record_id,'reviewer_note':x.reviewer_note} for x in rows]
-\ndef stable_record_identity(normalized, row):
+
+def stable_record_identity(normalized, row):
     strong = normalized.get("registration") or normalized.get("tender_id") or normalized.get("contract_id")
     if strong:
         return hashlib.sha256(str(strong).casefold().strip().encode("utf-8")).hexdigest()[:32]
     # Fallback to canonical row content; avoids row-position based identity.
     canonical=json.dumps(row,ensure_ascii=False,sort_keys=True,separators=(",",":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:32]
-\nclass SourceInspectIn(BaseModel):
+
+class SourceInspectIn(BaseModel):
     source_code: str = Field(min_length=1,max_length=90)
     url: str = Field(min_length=10,max_length=2000)
 class PublicSourceSyncIn(BaseModel):
