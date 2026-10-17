@@ -200,7 +200,7 @@ async def discover_web(data: WebDiscoveryIn, db: Session = Depends(get_db)):
                 identity = hashlib.sha256((record['url']+'#'+str(record['row_index'])).encode()).hexdigest()
                 store_source_payload(db, 'web:'+identity, {'kind': 'public_web_document', 'format': record['format'],
                                      'raw': record['row'], 'normalized': normalize_record(record['row']),
-                                     'content_sha256': record['content_sha256']}, source_url=record['url'], source_code=source.code)
+                                     'content_sha256': record['content_sha256'], 'extraction_method': record.get('extraction_method', 'http')}, source_url=record['url'], source_code=source.code)
                 saved += 1
             run.status = 'success' if any(p['status'] == 'read' for p in result['pages']) else 'failed'
             source.access_notes = 'Веб таталтын хүрээ: '+result['status']+'; '+', '.join(sorted({p['status'] for p in result['pages']}))

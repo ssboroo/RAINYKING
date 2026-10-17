@@ -62,3 +62,29 @@ def test_javascript_placeholder_is_not_imported_as_evidence():
     result = asyncio.run(run())
     assert result['records'] == []
     assert result['pages'][0]['status'] == 'limited_html_possible_javascript'
+
+
+def test_browser_scope_rejects_external_private_ports_and_credentials():
+    from app.document_extraction import same_public_source
+    assert same_public_source('https://api.shilendans.gov.mn/data', 'shilendans.gov.mn')
+    assert not same_public_source('https://shilendans.gov.mn.evil.test/', 'shilendans.gov.mn')
+    assert not same_public_source('http://shilendans.gov.mn/', 'shilendans.gov.mn')
+    assert not same_public_source('https://shilendans.gov.mn:8080/', 'shilendans.gov.mn')
+    assert not same_public_source('https://user:password@shilendans.gov.mn/', 'shilendans.gov.mn')
+
+
+def test_dynamic_page_uses_renderer_and_keeps_extraction_provenance(monkeypatch):
+    from app import document_extraction
+    async def render(url, host, allowed):
+        assert allowed(url)
+        return '<html><table><tr><th>company_name</th></tr><tr><td>Dynamic company</td></tr></table></html>'.encode(), url
+    monkeypatch.setattr(document_extraction, 'render_public_page', render)
+    def handler(request):
+        if request.url.path == '/robots.txt': return httpx.Response(404)
+        return httpx.Response(200, headers={'content-type':'text/html'}, text='<html><div id="app"></div></html>')
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await crawl_public_site(HOST+'/', 'Dynamic', client=client, delay=0)
+    result = asyncio.run(run())
+    assert result['records'][0]['row']['company_name'] == 'Dynamic company'
+    assert result['records'][0]['extraction_method'] == 'browser'

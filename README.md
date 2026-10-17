@@ -91,3 +91,10 @@ No portal login is bypassed and no HTML scraping is presented as an official API
 Баримт: https://docs.railway.com/config-as-code/reference болон https://docs.railway.com/deployments/monorepo . Root Docker build-д Next.js 15.5.28 ба npm lockfile ашиглана.
 
 Railway-ийн энэ төслийн үндсэн хувилбар нь тусдаа PostgreSQL сервис, persistent volume ашиглана. SQLite нь зөвхөн локал/MVP сонголт; улсын хэмжээний сангийн архитектур гэж үзэхгүй. Үндэсний түвшний нэвтрүүлэлтээс өмнө full-text/талбарын индекс, background queue, versioned migrations, backup/restore туршилт, дүрд суурилсан админ нэвтрэлт, ажиглалт ба ачааллын шалгалт шаардлагатай. Одоогийн crawler/report нь хязгаартай эхний ажиллагаатай хувилбар.
+
+## Хяналтын төв ба өргөтгөсөн баримт уншилт
+Нүүр хуудас бодит сангийн үзүүлэлт, эх сурвалжийн матриц, сүүлийн таталт, судалгаа/тайлангийн шууд үйлдэлтэй. Desktop/tablet/mobile layout, keyboard focus, танигдах label-тай navigation ашиглана.
+
+`ENABLE_BROWSER_EXTRACTION=true` үед богино JavaScript app shell-д Chromium дүрслэл ашиглаж, ачаалсан DOM хүснэгт/текстийг уншина. Browser session бүр тусгаарлагдсан; зөвхөн тухайн эх сурвалжийн HTTPS домэйн/дэд домэйн, нийтийн DNS хаяг, robots нөхцөлтэй хүсэлтүүдийг зөвшөөрнө. Нэвтрэлт, CAPTCHA, bot challenge тойрохгүй; дүрслэл нэг зэрэг 1, нийт 40 секундийн хязгаартай.
+
+`ENABLE_PDF_OCR=true` үед текстгүй PDF-ийн эхний 10 хуудсыг Poppler + Tesseract `mon+eng` ашиглан танина. OCR мөрүүдийг танилтын алдаа байж болохыг тэмдэглэж хадгална. Root Docker image эдгээр runtime-ийг суулгана; тусдаа backend Docker ашиглавал өөрөө суулгах эсвэл flag-уудыг унтраана. Browser renderer нь portal-specific filter navigation-ийг автоматаар бүрэн тайлж чадахгүй; татсан үр дүнгийн page/depth хязгаар хэвээр.

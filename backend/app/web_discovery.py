@@ -103,7 +103,25 @@ async def crawl_public_site(start_url, query='', max_pages=5, max_depth=2, clien
                 if pages: await asyncio.sleep(crawl_delay)
                 raw, mime, final_url = await download(client, url, host, allowed)
                 fmt, rows = parse_public_payload(raw, mime, final_url, max_rows=500)
-                limited_html = fmt == 'html_text' and bool(rows) and len(str(rows[0].get('text', ''))) < 150
+                method = 'http'
+                extraction_issue = None
+                limited_html = fmt == 'html_text' and (not rows or len(str(rows[0].get('text', ''))) < 150)
+                if limited_html:
+                    try:
+                        from .document_extraction import render_public_page
+                        raw, final_url = await render_public_page(final_url, host, allowed)
+                        fmt, rows = parse_public_payload(raw, 'text/html', final_url, max_rows=500)
+                        limited_html = fmt == 'html_text' and (not rows or len(str(rows[0].get('text', ''))) < 150)
+                        method = 'browser'
+                    except Exception as exc:
+                        extraction_issue = str(exc)[:250] if isinstance(exc, ConnectorError) else type(exc).__name__
+                if fmt == 'pdf' and not rows:
+                    try:
+                        from .document_extraction import ocr_pdf
+                        rows = await asyncio.to_thread(ocr_pdf, raw)
+                        method = 'ocr'
+                    except ConnectorError as exc:
+                        extraction_issue = str(exc)[:250]
                 matched = []
                 for index, row in enumerate(rows):
                     text = json.dumps(row, ensure_ascii=False, default=str).casefold()
@@ -111,12 +129,12 @@ async def crawl_public_site(start_url, query='', max_pages=5, max_depth=2, clien
                         matched.append((index, row))
                 for index, row in matched:
                     records.append({'url': final_url, 'format': fmt, 'row_index': index,
-                                    'row': row, 'content_sha256': hashlib.sha256(raw).hexdigest()})
+                                    'row': row, 'extraction_method': method, 'content_sha256': hashlib.sha256(raw).hexdigest()})
                 status = 'read' if rows else ('needs_ocr' if fmt == 'pdf' else 'empty')
                 if limited_html:
                     status = 'limited_html_possible_javascript'
                 pages.append({'url': final_url, 'status': status, 'format': fmt,
-                              'rows_read': len(rows), 'matched_rows': len(matched), 'bytes': len(raw)})
+                              'rows_read': len(rows), 'matched_rows': len(matched), 'bytes': len(raw), 'extraction_method': method, 'extraction_issue': extraction_issue})
                 if fmt.startswith('html') and depth < max_depth:
                     for link in discover_links(raw, final_url, host, query):
                         if link not in queued and len(queued) < 200:
