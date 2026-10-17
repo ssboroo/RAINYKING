@@ -30,8 +30,6 @@ services:
         NEXT_PUBLIC_API_URL: http://localhost:8000
     ports: ["3000:3000"]
     depends_on: [api]
-volumes:
-  pgdata:
 
   scheduler:
     build: ./backend
@@ -46,3 +44,5 @@ volumes:
       AUTO_SYNC_SOURCES: ${AUTO_SYNC_SOURCES:-}
     depends_on:
       db: {condition: service_healthy}
+volumes:
+  pgdata:
