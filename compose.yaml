@@ -32,3 +32,17 @@ services:
     depends_on: [api]
 volumes:
   pgdata:
+
+  scheduler:
+    build: ./backend
+    command: ["python", "-m", "app.scheduler"]
+    profiles: ["scheduler"]
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+psycopg://transparency:${POSTGRES_PASSWORD}@db:5432/transparency
+      ADMIN_API_KEY: ${ADMIN_API_KEY:?Set ADMIN_API_KEY in .env}
+      TENDER_BEARER_TOKEN: ${TENDER_BEARER_TOKEN:-}
+      AUTO_SYNC_INTERVAL_MINUTES: ${AUTO_SYNC_INTERVAL_MINUTES:-360}
+      AUTO_SYNC_SOURCES: ${AUTO_SYNC_SOURCES:-}
+    depends_on:
+      db: {condition: service_healthy}

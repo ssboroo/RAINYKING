@@ -38,3 +38,5 @@ No portal login is bypassed and no HTML scraping is presented as an official API
 - HTTP сүлжээний алдаанд 3 удаа хүртэл retry/backoff хийнэ. Зөвшөөрсөн домэйн, HTTPS, 5 MB болон 500 мөрийн хязгаар үйлчилнэ. Login/CAPTCHA тойрохгүй.
 - Монгол/англи толгой нэрээс нэр, регистр, байгууллага, тендер/гэрээний дугаар, төсөв, огноог стандартчилна; raw эх өгөгдлийг хамт хадгална. Ижил нэрээр шууд нэгтгэхгүй.
 - Хязгаарлалт: PDF нь текстэн PDF байх шаардлагатай (OCR байхгүй); XLSX active worksheet-ийн эхний мөрийг header гэж үзнэ; сайт бүрийн API/schema өөр тул эх сурвалж тус бүр дээр URL-ийг эхлээд inspect хийж баталгаажуулна.
+
+- Optional periodic worker: set AUTO_SYNC_SOURCES to a JSON list such as [{"source_code":"shilendans","url":"https://shilendans.gov.mn/openData"}], then run `docker compose --profile scheduler up -d --build`. AUTO_SYNC_INTERVAL_MINUTES defaults to 360. Empty configuration means idle; only choose stable, public dataset URLs, not a login page or a general portal homepage.
