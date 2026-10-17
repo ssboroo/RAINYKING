@@ -4,7 +4,8 @@ import {Activity,ArrowUpRight,Building2,Database,FileSearch,FileWarning,LayoutDa
 type Tender={id:number;external_id:string;title:string;budget_amount:number|null;bid_count:number|null;source_url:string;fetched_at:string};
 type Risk={id:number;title:string;severity:string;rule_code:string;confidence:number;explanation:string;review_status:string;evidence_id:number};
 type Source={code:string;name:string;status:string;last_success_at:string|null;last_error:string|null;url:string;records_total?:number;latest_run_status?:string|null;latest_run_at?:string|null;latest_records_saved?:number;latest_error?:string|null};
-type Results={tenders:Tender[];companies:{id:number;name:string;resolution_status:string}[];organizations:{id:number;name:string}[]};\ntype Relationship={id:number;from_type:string;from_id:number;to_type:string;to_id:number;relationship_type:string;confidence:number;verification_status:string;source_record_id:number;reviewer_note?:string|null};
+type Results={tenders:Tender[];companies:{id:number;name:string;resolution_status:string}[];organizations:{id:number;name:string}[]};
+type Relationship={id:number;from_type:string;from_id:number;to_type:string;to_id:number;relationship_type:string;confidence:number;verification_status:string;source_record_id:number;reviewer_note?:string|null};
 const base=process.env.NEXT_PUBLIC_API_URL||'http://localhost:8000';
 async function get<T>(path:string):Promise<T>{const res=await fetch(base+path,{cache:'no-store'});if(!res.ok)throw new Error('API холболт амжилтгүй');return res.json()}
 const money=(n:number|null)=>n===null?'Дүн тодорхойгүй':new Intl.NumberFormat('mn-MN').format(n)+' ₮';
@@ -28,4 +29,5 @@ export default function Home(){
 }
 function TenderList({tenders}:{tenders:Tender[]}){return tenders.length?<div className="tenderList">{tenders.map(t=><div className="tenderRow" key={t.id}><span className="listIcon"><FileSearch size={18}/></span><div className="tenderText"><b>{t.title}</b><small>№ {t.external_id} · {t.bid_count===null?'Оролцогчийн тоо тодорхойгүй':t.bid_count+' санал'} <span>· {t.fetched_at?new Date(t.fetched_at).toLocaleDateString('mn-MN'):''}</span></small></div><div className="tenderAmount"><strong>{money(t.budget_amount)}</strong><a href={t.source_url} target="_blank" rel="noreferrer">Эх сурвалж <ArrowUpRight size={13}/></a></div></div>)}</div>:<Empty message="Одоогоор импортолсон мэдээлэл алга. Систем бодит бус тоо үүсгэхгүй."/>}
 function Empty({message}:{message:string}){return <div className="empty"><Clock3 size={30}/><p>{message}</p></div>}
-\nfunction entityTypeLabel(type:string){return type==='company'?'Компани':type==='organization'?'Байгууллага':type==='tender'?'Тендер':type;}\n
+
+function entityTypeLabel(type:string){return type==='company'?'Компани':type==='organization'?'Байгууллага':type==='tender'?'Тендер':type;}
