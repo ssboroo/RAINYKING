@@ -133,3 +133,75 @@ def test_record_search_and_owner_graph_keep_source_claims_distinct(client):
     graph = client.get(f'/api/v1/investigation/entity/source_record/{record_id}?depth=1').json()
     assert any(node['type'] == 'owner_mention' and node['label'] == 'Болд Сарнай' for node in graph['nodes'])
     assert any(edge['verification_status'] == 'source_claim' for edge in graph['edges'])
+
+
+def test_unified_report_requires_a_subject_and_empty_results_are_not_exoneration(client):
+    assert client.get('/api/v1/unified-report').status_code == 422
+    assert client.get('/api/v1/unified-report?q=%20%20').status_code == 422
+    result = client.get('/api/v1/unified-report?q=missing').json()
+    assert result['summary']['records'] == 0
+    assert result['summary']['budget_by_currency'] == {}
+    assert any('зөрчил байхгүй' in text for text in result['conclusions'])
+    assert result['source_coverage'][0]['imported_records'] == 1
+
+
+def test_unified_report_deduplicates_versions_and_never_joins_by_owner_name(client):
+    from datetime import datetime, timezone, timedelta
+    override = app.dependency_overrides[get_db]
+    with next(override()) as db:
+        record = db.query(SourceRecord).first()
+        record.raw_payload = {'company_name': 'Тест ХХК', 'registration': 'AB123', 'owner_name': 'Болд Сарнай'}
+        record.fetched_at = datetime.now(timezone.utc)
+        db.add(SourceRecord(source_id=record.source_id, external_id=record.external_id, raw_payload={'owner_name': 'Хуучин эзэмшигч'}, sha256='b'*64, source_url=record.source_url, fetched_at=record.fetched_at-timedelta(days=1)))
+        db.commit()
+    result = client.get('/api/v1/unified-report', params={'registration': 'ab123'}).json()
+    assert result['summary']['records'] == 1
+    assert result['summary']['excluded_older_versions'] == 1
+    assert result['owner_mentions'][0]['status'] == 'source_claim'
+    assert len(result['owner_mentions']) == 1
+    assert result['records'][0]['sha256'] == 'a'*64
+    assert result['summary']['linked_tenders'] == 36
+    assert result['summary']['budget_by_currency'] == {'MNT': 1_750_000_000}
+    assert client.get('/api/v1/unified-report?q=Хуучин').json()['summary']['records'] == 0
+
+
+def test_unified_report_excludes_rejected_signals_and_keeps_proof(client):
+    from app.models import Evidence, RiskFinding
+    override = app.dependency_overrides[get_db]
+    with next(override()) as db:
+        record = db.query(SourceRecord).first()
+        record.raw_payload = {'company_name': 'Тест ХХК'}
+        evidence = Evidence(source_record_id=record.id, source_url=record.source_url, document_hash=record.sha256, excerpt='test')
+        db.add(evidence)
+        db.flush()
+        tender = db.query(Tender).first()
+        for code, status in [('R01', 'pending_review'), ('R03', 'rejected')]:
+            db.add(RiskFinding(rule_code=code, title='Review signal', entity_type='tender', entity_id=tender.id, confidence=.5, explanation='Review only', limitations='Not proof', evidence_id=evidence.id, review_status=status))
+        db.commit()
+    result = client.get('/api/v1/unified-report?q=Тест').json()
+    assert result['summary']['review_signals'] == 1
+    assert len(result['dismissed_signals']) == 1
+    assert result['signals'][0]['source_url'] == 'https://example.com/evidence'
+
+
+def test_crawl_import_requires_admin_and_preserves_source_evidence(client, monkeypatch):
+    from app.config import settings, Settings
+    from app import web_discovery
+    assert Settings(database_url='postgres://u:p@db:5432/app').database_url == 'postgresql+psycopg://u:p@db:5432/app'
+    monkeypatch.setattr(settings, 'admin_api_key', 'test-admin-key')
+    override = app.dependency_overrides[get_db]
+    with next(override()) as db:
+        source = db.query(SourceRegistry).first()
+        source.url = 'https://opendata.gov.mn/'
+        db.commit()
+    async def mock_crawl(*args):
+        return {'status':'bounded_complete', 'pages':[{'url':'https://opendata.gov.mn/test.csv','status':'read','rows_read':1}], 'records':[{'url':'https://opendata.gov.mn/test.csv','format':'csv','row_index':0,'row':{'company_name':'Crawl company','registration':'CRAWL123'},'content_sha256':'c'*64}]}
+    monkeypatch.setattr(web_discovery, 'crawl_public_site', mock_crawl)
+    payload = {'source_codes':['test'], 'q':'Crawl'}
+    assert client.post('/api/v1/admin/sources/discover-web', json=payload).status_code == 403
+    response = client.post('/api/v1/admin/sources/discover-web', json=payload, headers={'x-api-key':'test-admin-key'})
+    assert response.status_code == 200
+    assert response.json()['sources'][0]['records_saved'] == 1
+    result = client.get('/api/v1/unified-report?registration=CRAWL123').json()
+    assert result['summary']['records'] == 1
+    assert result['records'][0]['source_url'] == 'https://opendata.gov.mn/test.csv'

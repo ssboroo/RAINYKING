@@ -1,5 +1,9 @@
 RAINY TRANSPARENCY — Монголын нээлттэй мэдээллийн платформ
 
+## Одоогийн холболтын баталгаажуулалт
+2026-10-17: өмнө нь CKAN гэж тэмдэглэсэн `opendata.gov.mn/api/3/action` холболтын одоогийн endpoint/schema баталгаажаагүй. CKAN adapter код байгаа нь live портал CKAN ашигладаг гэсэн баталгаа биш; каталогт `unverified_ckan_adapter` гэж харуулна. Доорх CKAN маршрут нь compatibility adapter бөгөөд бодит хариуг шалгахаас өмнө бэлэн интеграц гэж үзэхгүй. Улсын бүртгэлийн нийтийн портал: https://opendata.burtgel.gov.mn/.
+
+
 ## Эх сурвалжийн интеграцийн төлөв
 - Төрийн худалдан авах ажиллагааны REST API: https://opendata.tender.gov.mn/ — invitation, plan, suppliers endpoint adapter болон админ sync API нэмэгдсэн. Бодит ажиллуулахын тулд албан ёсны Bearer token шаардлагатай.
 - Шилэн данс: https://shilendans.gov.mn/openData — төсөв, гүйцэтгэл, хөрөнгө оруулалт, орлого/зарлагын тайлангийн ангилал баталгаажсан; нийтэд нээлттэй API endpoint/schema баталгаажаагүй.
@@ -66,3 +70,24 @@ No portal login is bypassed and no HTML scraping is presented as an official API
 `GET /api/v1/record-search` нь `q`, `company_name`, `organization_name`, `registration`, `owner_name`, `source_code`, `offset`, `limit` нөхцөлтэй. Нөхцөлүүд AND; регистр яг таарна, нэрийн үгс нэг нэрийн утгад таарна. `q` нь хадгалсан raw/normalized баримтын бүх утгаас хайна. Эх сурвалж, URL, SHA-256, олдсон талбарын замыг хариунд өгнө. Одоогийн хувилбар сонгосон эх сурвалжийн баримтуудыг streaming scan хийдэг тул их хэмжээний санд тусдаа индекс шаардлагатай.
 
 `owner_name` / `owner_full_name`, эзэмшигчийн овог нэр, nested `owners` / `shareholders` доторх surname/first_name зэрэг ил тод талбаруудаас эзэмшигчийн нэрийг олно. Эзэмшигчийн регистрийг компанийн регистртэй андуурахгүй. Графийн `owner_mention` зангилаа нь тухайн баримтын мэдэгдэл; ижил нэрээр хүнийг нэгтгэхгүй. Компанийн регистр таарсан эх баримтуудыг графтай холбоно. Граф гүн болон салааллын хязгаартай тул бүх боломжит холбоог бүрэн харуулсан гэж үзэхгүй. Эзэмшил, ашиг сонирхлын зөрчил эсвэл гэм бурууг автоматаар тогтоохгүй.
+
+## Нэгдсэн тайлан ба API-гүй веб илрүүлэлт
+- `GET /api/v1/unified-report?q=...&registration=...` — дор хаяж нэг нөхцөлтэй; эх сурвалж+external_id бүрийн сүүлийн хувилбар, exact ID холбоостой тендер, эзэмшигчийн эх баримтын мэдэгдэл, эрсдэлийн дохио, хамрах хүрээ, аргачлал/хязгаарыг нэгтгэнэ. Хуучин хувилбар, татгалзсан дохиог дүгнэлтийн тоонд оруулахгүй. Төсвийг валютаар тусад нь харуулна. Нүүр хуудас тайлангийн интерфейстэй, JSON татах болон хэвлэх/PDF боломжтой.
+- Админ `POST /api/v1/admin/sources/discover-web`: `{"source_codes":["company_registry","shilendans","iaac"],"q":"компанийн нэр","max_pages":5,"max_depth":2}`. Header: `x-api-key`.
+- API шаардлагагүй: robots.txt → нийтийн HTML → ажиглагдсан GET хайлтын маягт → дотоод холбоос → HTML хүснэгт/текст, текстэн PDF, XLSX, CSV, JSON. Нэг эх сурвалжид 1–10 хуудас, 0–3 түвшин, 5 MB/баримт. URL/redirect бүрийг allowlist ба эх сурвалжийн домэйнээр шалгана. Нэг source тутамд завсарлага, robots crawl-delay үйлчилнэ. Нэвтрэлт/CAPTCHA тойрохгүй.
+- Веб интерфейсийн «API-гүй нийтийн вебээс баримт хайж импортлох» хэсэгт эх сурвалжууд сонгож, админ түлхүүрээр таталт эхлүүлнэ. Түлхүүр browser storage-д хадгалахгүй, ажиллагааны дараа арилгана. Хадгалсан мөрүүд шууд нэгдсэн хайлт/тайланд ашиглагдана; тайлангаа дахин үүсгэнэ.
+- Сайт бүрийн хүрээ, амжилт/алдаа, robots хориг, JavaScript шаардлагатай байж болох хоосон HTML, OCR шаардлагатай зурагт PDF-ийг тусад нь харуулна. Ерөнхий crawler нь хязгаартай discovery; порталын бүх хайлт, JS app, зурагт PDF-г бүрэн дэмждэг гэж үзэхгүй. Том сайтын хувьд тусгай DOM/browser adapter, OCR worker, индекс ба background queue дараагийн ажил.
+
+## Railway: нэг сервис, нэг домэйн
+Репозиторийн үндсэн `Dockerfile` frontend + FastAPI + nginx-ийг нэг сервисээр ажиллуулна. `railway.json` build, `/health` шалгалт, restart policy тохируулна. Railway service-ийн root directory `/` байна. Нийтийн домэйн дээр `/api/*` ба `/health` backend руу, бусад зам frontend руу очно; browser API дуудлага same-origin тул `NEXT_PUBLIC_API_URL` шаардлагагүй.
+
+- Persistent volume: `/data`; `DATABASE_URL=sqlite:////data/transparency.db` — нэг instance MVP-д. Volume-гүй SQLite production-д ашиглахгүй.
+- PostgreSQL ашиглах бол `DATABASE_URL=${{Postgres.DATABASE_URL}}`; `postgres://` / `postgresql://` нь psycopg driver URL руу тохируулагдана. Олон instance/их ачаалалд PostgreSQL ба worker/queue шаардлагатай.
+- `ADMIN_API_KEY`: Railway secret variable; `TENDER_BEARER_TOKEN`: албан API token байгаа үед л тохируулна.
+- `PORT`: Railway автоматаар өгнө, nginx тэр порт дээр сонсоно. Backend 8000, frontend 3000 нь зөвхөн container дотор байна.
+- Админ түлхүүр нь UI-аас харагдахгүй, crawler/import endpoint-үүд түүнгүйгээр ажиллахгүй. Ажиллуулахын тулд Railway Variables-оос эрхтэй админ түлхүүрээ ашиглана.
+- Тусдаа frontend/backend deploy мөн боломжтой: root `/frontend`, `/backend`; frontend build үед нийтийн backend `NEXT_PUBLIC_API_URL`, backend дээр тохирох `ALLOWED_ORIGINS` өгнө. Backend Docker нь одоогоор 8000 порттой тул Railway domain-ийн target port 8000 сонгоно.
+
+Баримт: https://docs.railway.com/config-as-code/reference болон https://docs.railway.com/deployments/monorepo . Root Docker build-д Next.js 15.5.28 ба npm lockfile ашиглана.
+
+Railway-ийн энэ төслийн үндсэн хувилбар нь тусдаа PostgreSQL сервис, persistent volume ашиглана. SQLite нь зөвхөн локал/MVP сонголт; улсын хэмжээний сангийн архитектур гэж үзэхгүй. Үндэсний түвшний нэвтрүүлэлтээс өмнө full-text/талбарын индекс, background queue, versioned migrations, backup/restore туршилт, дүрд суурилсан админ нэвтрэлт, ажиглалт ба ачааллын шалгалт шаардлагатай. Одоогийн crawler/report нь хязгаартай эхний ажиллагаатай хувилбар.

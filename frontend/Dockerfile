@@ -1,7 +1,7 @@
 FROM node:22-alpine AS build
 WORKDIR /web
 COPY package*.json ./
-RUN npm install
+RUN npm ci
 COPY . .
 ARG NEXT_PUBLIC_API_URL=http://localhost:8000
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
