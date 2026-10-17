@@ -193,7 +193,8 @@ async def discover_web(data: WebDiscoveryIn, db: Session = Depends(get_db)):
         run = SourceSyncRun(source_code=source.code, source_url=source.url, status='running')
         db.add(run); db.commit(); db.refresh(run)
         try:
-            result = await crawl_public_site(source.url, data.q, data.max_pages, data.max_depth)
+            start_url = next((item['docs'] for item in connector_catalog() if item['code'] == source.code), source.url)
+            result = await crawl_public_site(start_url, data.q, data.max_pages, data.max_depth)
             saved = 0
             for record in result.pop('records'):
                 identity = hashlib.sha256((record['url']+'#'+str(record['row_index'])).encode()).hexdigest()
