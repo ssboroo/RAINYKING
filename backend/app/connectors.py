@@ -1,5 +1,10 @@
 """Official-source adapters. Only documented/authorized APIs are called; no login scraping."""
-import httpx, csv, io, json, hashlib, asyncio\nfrom datetime import datetime, timezone\nfrom urllib.parse import urljoin\nfrom bs4 import BeautifulSoup\nfrom openpyxl import load_workbook\nfrom pypdf import PdfReader
+import httpx, csv, io, json, hashlib, asyncio
+from datetime import datetime, timezone
+from urllib.parse import urljoin
+from bs4 import BeautifulSoup
+from openpyxl import load_workbook
+from pypdf import PdfReader
 from urllib.parse import urlparse
 from .config import settings
 TENDER_API = "https://opendata.tender.gov.mn/api"
@@ -54,7 +59,8 @@ async def fetch_public_resource(url: str, max_bytes: int = 5_000_000, max_rows: 
         return list(csv.DictReader(io.StringIO(text)))[:max_rows]
     raise ConnectorError("Resource CSV/JSON биш байна; тохирох parser шаардлагатай.")
 
-class ConnectorError(RuntimeError): pass\n
+class ConnectorError(RuntimeError): pass
+
 PUBLIC_HOSTS = {"opendata.gov.mn","www.opendata.gov.mn","shilendans.gov.mn","www.shilendans.gov.mn","open.audit.mn","iaac.mn","www.iaac.mn","shuukh.mn","www.shuukh.mn","legalinfo.mn","www.legalinfo.mn","opendata.mn","www.opendata.mn","gov.opendata.mn","www.gov.opendata.mn","opendata.tender.gov.mn","tender.gov.mn","www.tender.gov.mn"}
 
 def validate_public_url(url: str) -> str:

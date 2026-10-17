@@ -10,7 +10,8 @@ from .db import Base, engine, get_db
 from .models import SourceRegistry, SourceRecord, Company, Organization, Tender, TenderPlan, TenderSupplier, Evidence, RiskFinding, ReviewAction, AuditLog, Relationship, SourceSyncRun
 from .services import ingest_tender, evaluate_r01
 from .connectors import connector_catalog, tender_invitations, tender_plans, tender_suppliers, ckan_package_search, ckan_package_show, fetch_public_resource, inspect_public_source, fetch_registered_public_resource, validate_public_url, ConnectorError
-from .integrations import upsert_connector_registry, catalog_status, mark_result\nfrom .normalization import normalize_record
+from .integrations import upsert_connector_registry, catalog_status, mark_result
+from .normalization import normalize_record
 
 SOURCE_SEEDS = [
     ('tender_official','Тендерийн Open Data API','https://opendata.tender.gov.mn/','bearer_api'),

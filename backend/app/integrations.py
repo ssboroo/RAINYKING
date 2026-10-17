@@ -1,7 +1,8 @@
 from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.orm import Session
-from .models import SourceRegistry, SourceRecord, SourceSyncRun\nfrom sqlalchemy import func
+from .models import SourceRegistry, SourceRecord, SourceSyncRun
+from sqlalchemy import func
 from .connectors import connector_catalog
 def upsert_connector_registry(db:Session):
     for item in connector_catalog():
