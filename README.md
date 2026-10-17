@@ -3,7 +3,7 @@ RAINY TRANSPARENCY — Монголын нээлттэй мэдээллийн п
 ## Эх сурвалжийн интеграцийн төлөв
 - Төрийн худалдан авах ажиллагааны REST API: https://opendata.tender.gov.mn/ — invitation, plan, suppliers endpoint adapter болон админ sync API нэмэгдсэн. Бодит ажиллуулахын тулд албан ёсны Bearer token шаардлагатай.
 - Шилэн данс: https://shilendans.gov.mn/openData — төсөв, гүйцэтгэл, хөрөнгө оруулалт, орлого/зарлагын тайлангийн ангилал баталгаажсан; нийтэд нээлттэй API endpoint/schema баталгаажаагүй.
-- Засгийн газрын Open Data: https://opendata.gov.mn/ — dataset бүрийн endpoint, лиценз, schema нягтлах шаардлагатай.
+- Засгийн газрын Open Data: https://opendata.gov.mn/ — CKAN `package_search`/`package_show` нийтийн API-аар каталог татах, CSV/JSON resource-ийг хязгаартай хадгалах endpoint нэмэгдсэн.
 - OpenData.mn: https://opendata.mn/ — портал REST API дурдсан боловч endpoint/schema баталгаажуулах шаардлагатай.
 - Аудит: https://open.audit.mn/ — нийтэд нээлттэй API баримт олдоогүй.
 - Шүүх: https://shuukh.mn/ — API schema баталгаажаагүй.
@@ -20,3 +20,11 @@ Set TENDER_BEARER_TOKEN as deployment secret. Never commit secrets. Admin endpoi
 - GET /api/v1/integrations and /api/v1/source-status list source endpoints, requirements and sync status.
 
 No portal login is bypassed and no HTML scraping is presented as an official API. Tender plans and supplier responses now have normalized tables; contract documents and financial transactions still need verified source schemas and dedicated connectors. Local: cp .env.example .env; set secrets; docker compose up --build -d. API docs at http://localhost:8000/docs.
+
+## Нээлттэй өгөгдлийн таталт
+
+Засгийн газрын Open Data portal-ийн CKAN API: `https://opendata.gov.mn/api/3/action`.
+- `POST /api/v1/admin/sync/opendata-catalog?q=*&max_pages=2&per_page=100` — каталогийн metadata-г хадгална.
+- `POST /api/v1/admin/sync/opendata-resource` JSON `{"dataset_id":"CKAN_PACKAGE_ID","resource_id":null,"max_rows":500,"max_bytes":5000000}` — CSV/JSON resource-ийн мөрүүдийг хадгална. resource_id өгөхгүй бол эхний CSV/JSON resource сонгоно.
+- Resource зөвхөн opendata.gov.mn домэйны HTTPS хаягтай, 5 MB хүртэл, 500 мөр хүртэл байна.
+- Шилэн данс, аудит, шүүх, legalinfo, OpenData.mn-ийн хувьд албан ёсны API эсвэл download resource-ийн формат бүрийг баталгаажуулах хүртэл порталын холбоос/төлөв бүртгэнэ. Нэвтрэлтийг тойрохгүй.

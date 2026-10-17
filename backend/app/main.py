@@ -9,7 +9,7 @@ from .config import settings
 from .db import Base, engine, get_db
 from .models import SourceRegistry, SourceRecord, Company, Organization, Tender, TenderPlan, TenderSupplier, Evidence, RiskFinding, ReviewAction, AuditLog, Relationship
 from .services import ingest_tender, evaluate_r01
-from .connectors import connector_catalog, tender_invitations, tender_plans, tender_suppliers, ConnectorError
+from .connectors import connector_catalog, tender_invitations, tender_plans, tender_suppliers, ckan_package_search, ckan_package_show, fetch_public_resource, ConnectorError
 from .integrations import upsert_connector_registry, catalog_status, mark_result
 
 SOURCE_SEEDS = [
@@ -69,8 +69,8 @@ def source_status(db:Session=Depends(get_db)):
 def stats(db:Session=Depends(get_db)):
     return {'tenders':db.scalar(select(func.count()).select_from(Tender)), 'plans':db.scalar(select(func.count()).select_from(TenderPlan)), 'suppliers':db.scalar(select(func.count()).select_from(TenderSupplier)), 'companies':db.scalar(select(func.count()).select_from(Company)), 'organizations':db.scalar(select(func.count()).select_from(Organization)), 'risk_findings':db.scalar(select(func.count()).select_from(RiskFinding))}
 
-def store_source_payload(db:Session, external_id:str, payload:dict, source_url:str='https://www.tender.gov.mn/')->SourceRecord:
-    source=db.scalar(select(SourceRegistry).where(SourceRegistry.code=='tender_official'))
+def store_source_payload(db:Session, external_id:str, payload:dict, source_url:str='https://www.tender.gov.mn/', source_code:str='tender_official')->SourceRecord:
+    source=db.scalar(select(SourceRegistry).where(SourceRegistry.code==source_code))
     if source is None:
         raise ValueError('tender_official source is not registered')
     encoded=json.dumps(payload,ensure_ascii=False,sort_keys=True,separators=(',',':')).encode('utf-8')
@@ -184,6 +184,52 @@ class SupplierSyncIn(BaseModel):
     invitation_id: int = Field(gt=0)
     max_pages: int = Field(default=1, ge=1, le=100)
     per_page: int = Field(default=100, ge=1, le=100)
+
+@app.post('/api/v1/admin/sync/opendata-catalog',dependencies=[Depends(require_admin)])
+async def sync_opendata_catalog(q:str='*',max_pages:int=Query(default=1,ge=1,le=50),per_page:int=Query(default=100,ge=1,le=100),db:Session=Depends(get_db)):
+    pages=0; received=0; saved=0
+    try:
+        for page in range(max_pages):
+            result=await ckan_package_search(q=q,start=page*per_page,rows=per_page)
+            pages+=1; datasets=result.get('results',[]); received+=len(datasets)
+            for item in datasets:
+                ext=str(item.get('id') or item.get('name') or '').strip()
+                if not ext: continue
+                rec=store_source_payload(db,'opendata:dataset:'+ext,{'kind':'dataset_catalog','dataset':item},source_url='https://opendata.gov.mn/dataset/'+str(item.get('name') or ext),source_code='government_opendata')
+                saved+=1
+            db.commit()
+            if len(datasets)<per_page or (result.get('count') and (page+1)*per_page>=result['count']): break
+        mark_result(db,'government_opendata')
+    except ConnectorError as exc:
+        db.rollback(); mark_result(db,'government_opendata',str(exc)); raise HTTPException(502,str(exc))
+    return {'source':'government_opendata','pages_fetched':pages,'datasets_received':received,'catalog_records_saved':saved,'query':q,'note':'Каталогын metadata хадгалсан. CSV/JSON өгөгдлийг resource sync endpoint-оор тусад нь татна.'}
+
+class OpenDataResourceSyncIn(BaseModel):
+    dataset_id: str = Field(min_length=1,max_length=300)
+    resource_id: str|None = Field(default=None,max_length=300)
+    max_rows: int = Field(default=500,ge=1,le=500)
+    max_bytes: int = Field(default=5000000,ge=1000,le=5000000)
+
+@app.post('/api/v1/admin/sync/opendata-resource',dependencies=[Depends(require_admin)])
+async def sync_opendata_resource(data:OpenDataResourceSyncIn,db:Session=Depends(get_db)):
+    try:
+        dataset=await ckan_package_show(data.dataset_id)
+        resources=dataset.get('resources') or []
+        resource=next((r for r in resources if data.resource_id and str(r.get('id'))==data.resource_id),None) if data.resource_id else next((r for r in resources if str(r.get('format','')).lower() in ('csv','json')),None)
+        if not resource: raise HTTPException(404,'CSV/JSON resource олдсонгүй. resource_id эсвэл dataset_id-г шалгана уу.')
+        url=str(resource.get('url') or '')
+        rows=await fetch_public_resource(url,max_bytes=data.max_bytes,max_rows=data.max_rows)
+        for index,row in enumerate(rows,1):
+            encoded=json.dumps(row,ensure_ascii=False,sort_keys=True,separators=(',',':'))
+            digest=hashlib.sha256(encoded.encode()).hexdigest()
+            store_source_payload(db,'opendata:row:'+str(resource.get('id'))+':'+str(index),{'kind':'dataset_row','dataset_id':data.dataset_id,'resource_id':resource.get('id'),'row_number':index,'row':row,'sha256':digest},source_url=url,source_code='government_opendata')
+        db.commit(); mark_result(db,'government_opendata')
+        return {'source':'government_opendata','dataset_id':data.dataset_id,'dataset_title':dataset.get('title'),'resource_id':resource.get('id'),'resource_format':resource.get('format'),'source_url':url,'rows_fetched':len(rows),'records_stored':len(rows),'limit_rows':data.max_rows,'note':'Эхний хувилбар 5 MB хүртэл CSV/JSON resource-ээс дээд тал нь 500 мөр хадгална. Лицензийг шалгана.'}
+    except HTTPException: raise
+    except ConnectorError as exc:
+        db.rollback(); mark_result(db,'government_opendata',str(exc)); raise HTTPException(502,str(exc))
+    except Exception:
+        db.rollback(); raise
 
 @app.post('/api/v1/admin/sync/tenders',dependencies=[Depends(require_admin)])
 async def sync_tenders(data:SyncIn,db:Session=Depends(get_db)):
