@@ -153,7 +153,7 @@ def graph(entity_id:int,db:Session=Depends(get_db)):
 
 @app.get('/api/v1/investigation/entity/{entity_type}/{entity_id}')
 def investigation_entity_graph(entity_type:str,entity_id:int,depth:int=Query(default=2,ge=1,le=3),db:Session=Depends(get_db)):
-    allowed={'company','organization','tender','supplier','tender_plan'}
+    allowed={'company','organization','tender','supplier','tender_plan','source_record'}
     if entity_type not in allowed: raise HTTPException(422,'entity_type must be company, organization, tender, supplier, or tender_plan')
     def node(t,i):
         obj=None; label=''; detail={}; source_id=None
@@ -172,6 +172,13 @@ def investigation_entity_graph(entity_type:str,entity_id:int,depth:int=Query(def
         elif t=='tender_plan':
             obj=db.get(TenderPlan,i)
             if obj: label=obj.title; detail={'external_id':obj.external_id,'tender_code':obj.tender_code,'year':obj.tender_year,'budget_amount':obj.budget_amount}; source_id=obj.source_record_id
+        elif t=='source_record':
+            obj=db.get(SourceRecord,i)
+            if obj:
+                source=db.get(SourceRegistry,obj.source_id)
+                label=(source.name if source else 'Эх баримт')+' · '+obj.external_id
+                detail={'external_id':obj.external_id,'fetched_at':obj.fetched_at.isoformat() if obj.fetched_at else None}
+                source_id=obj.id
         if not obj: return None
         rec=db.get(SourceRecord,source_id) if source_id else None
         return {'key':f'{t}:{i}','type':t,'id':i,'label':label,'details':detail,'source_record_id':source_id,'source_url':rec.source_url if rec else None,'sha256':rec.sha256 if rec else None}
@@ -236,6 +243,47 @@ def investigation_entity_graph(entity_type:str,entity_id:int,depth:int=Query(def
             if plan:
                 for t in db.scalars(select(Tender).where(Tender.external_id==plan.tender_code).limit(30)).all() if plan.tender_code else []:
                     add_edge(node('tender_plan',plan.id),node('tender',t.id),'тендерийн код ижил',1.0,'identifier_match',plan.source_record_id,'Тендерийн код яг таарсан'); neighbors.append(('tender',t.id))
+        elif current_type=='source_record':
+            current=db.get(SourceRecord,current_id)
+            if current:
+                def flatten(obj):
+                    values={}
+                    if isinstance(obj,dict):
+                        for k,v in obj.items():
+                            if isinstance(v,dict): values.update(flatten(v))
+                            elif isinstance(v,list):
+                                for item in v:
+                                    if isinstance(item,dict): values.update(flatten(item))
+                            elif v is not None: values[k]=v
+                    return values
+                current_fields=normalize_record(flatten(current.raw_payload if isinstance(current.raw_payload,dict) else {}))
+                registration=str(current_fields.get('registration') or '').strip().upper()
+                tender_code=str(current_fields.get('tender_id') or '').strip()
+                contract_code=str(current_fields.get('contract_id') or '').strip()
+                if registration:
+                    for c in db.scalars(select(Company).where(Company.registration==registration).limit(50)).all():
+                        add_edge(node('source_record',current.id),node('company',c.id),'регистрийн дугаар яг таарсан',1.0,'identifier_match',current.id,'Эх өгөгдөлд байгаа регистрийн дугаарыг яг тааруулсан'); neighbors.append(('company',c.id))
+                    for s in db.scalars(select(TenderSupplier).where(TenderSupplier.supplier_register==registration).limit(100)).all():
+                        add_edge(node('source_record',current.id),node('supplier',s.id),'регистрийн дугаар яг таарсан',1.0,'identifier_match',current.id,'Эх өгөгдөлд байгаа регистрийн дугаарыг яг тааруулсан'); neighbors.append(('supplier',s.id))
+                if tender_code:
+                    for t in db.scalars(select(Tender).where(Tender.external_id==tender_code).limit(50)).all():
+                        add_edge(node('source_record',current.id),node('tender',t.id),'тендерийн дугаар яг таарсан',1.0,'identifier_match',current.id,'Тендерийн дугаарыг яг тааруулсан'); neighbors.append(('tender',t.id))
+                    for p in db.scalars(select(TenderPlan).where(or_(TenderPlan.external_id==tender_code,TenderPlan.tender_code==tender_code)).limit(50)).all():
+                        add_edge(node('source_record',current.id),node('tender_plan',p.id),'тендерийн код яг таарсан',1.0,'identifier_match',current.id,'Тендерийн кодыг яг тааруулсан'); neighbors.append(('tender_plan',p.id))
+                if contract_code:
+                    # Keep exact contract identifiers available as cross-source evidence, without guessing an entity from a name.
+                    pass
+                if registration or tender_code or contract_code:
+                    for other in db.scalars(select(SourceRecord).where(SourceRecord.id!=current.id).order_by(SourceRecord.fetched_at.desc()).limit(1000)).all():
+                        raw=other.raw_payload if isinstance(other.raw_payload,dict) else {}
+                        fields=normalize_record(flatten(raw))
+                        same_reg=bool(registration and str(fields.get('registration') or '').strip().upper()==registration)
+                        same_tender=bool(tender_code and str(fields.get('tender_id') or '').strip()==tender_code)
+                        same_contract=bool(contract_code and str(fields.get('contract_id') or '').strip()==contract_code)
+                        if not (same_reg or same_tender or same_contract): continue
+                        match='регистрийн дугаар' if same_reg else ('тендерийн код' if same_tender else 'гэрээний дугаар')
+                        other_node=node('source_record',other.id)
+                        add_edge(node('source_record',current.id),other_node,match+' яг таарсан',1.0,'identifier_match',current.id,'Хоёр эх баримтын стандартчилсан албан ID яг ижил'); neighbors.append(('source_record',other.id))
         for other in neighbors:
             if other not in seen and node(*other):
                 seen.add(other);frontier.append((other[0],other[1],level+1))
