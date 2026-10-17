@@ -424,6 +424,91 @@ def public_relationships(verification_status:str='verified',limit:int=Query(defa
     rows=db.scalars(select(Relationship).where(Relationship.verification_status==verification_status).order_by(Relationship.id.desc()).limit(limit))
     return [{'id':x.id,'from_type':x.from_type,'from_id':x.from_id,'to_type':x.to_type,'to_id':x.to_id,'relationship_type':x.relationship_type,'confidence':x.confidence,'verification_status':x.verification_status,'source_record_id':x.source_record_id,'reviewer_note':x.reviewer_note} for x in rows]
 
+
+@app.get('/api/v1/admin/overview',dependencies=[Depends(require_admin)])
+def admin_overview(db:Session=Depends(get_db)):
+    """Single read model for the admin console; reports facts from persisted data only."""
+    sources=source_metrics(db)
+    runs=sync_runs(limit=20,db=db)
+    pending_relationships=db.scalar(select(func.count()).select_from(Relationship).where(Relationship.verification_status=='pending_review')) or 0
+    pending_risks=db.scalar(select(func.count()).select_from(RiskFinding).where(RiskFinding.review_status=='pending_review')) or 0
+    pending_companies=db.scalar(select(func.count()).select_from(Company).where(Company.resolution_status=='pending_review')) or 0
+    return {
+        'database':'connected',
+        'counts':{
+            'source_records':db.scalar(select(func.count()).select_from(SourceRecord)) or 0,
+            'tenders':db.scalar(select(func.count()).select_from(Tender)) or 0,
+            'plans':db.scalar(select(func.count()).select_from(TenderPlan)) or 0,
+            'suppliers':db.scalar(select(func.count()).select_from(TenderSupplier)) or 0,
+            'companies':db.scalar(select(func.count()).select_from(Company)) or 0,
+            'organizations':db.scalar(select(func.count()).select_from(Organization)) or 0,
+            'risks':db.scalar(select(func.count()).select_from(RiskFinding)) or 0,
+        },
+        'review_queue':{'relationships':pending_relationships,'risks':pending_risks,'companies':pending_companies},
+        'sources':sources,
+        'recent_sync_runs':runs,
+        'scheduler':{
+            'configured_sources':len(json.loads(__import__('os').environ.get('AUTO_SYNC_SOURCES','[]') or '[]')) if __import__('os').environ.get('AUTO_SYNC_SOURCES','[]').strip().startswith('[') else None,
+            'interval_minutes':__import__('os').environ.get('AUTO_SYNC_INTERVAL_MINUTES','360'),
+            'note':'Энэ нь environment тохиргоог л харуулна; scheduler process ажиллаж байгааг дангаараа батлахгүй.'
+        }
+    }
+
+@app.get('/api/v1/admin/production-check',dependencies=[Depends(require_admin)])
+def production_check(db:Session=Depends(get_db)):
+    """Lightweight deployment diagnostics. It does not claim that external sources are reachable."""
+    from sqlalchemy import text
+    from sqlalchemy.exc import SQLAlchemyError
+    from datetime import datetime,timezone
+    checks=[]
+    try:
+        db.execute(text('SELECT 1')).scalar_one()
+        checks.append({'name':'database_connection','status':'pass','detail':'SELECT 1 амжилттай'})
+        tables=('source_registry','source_records','source_sync_runs','tenders','tender_plans','tender_suppliers','companies','organizations','relationships','evidence_items','risk_findings')
+        existing=set(__import__('sqlalchemy').inspect(engine).get_table_names())
+        missing=[t for t in tables if t not in existing]
+        checks.append({'name':'database_schema','status':'pass' if not missing else 'fail','detail':'Шаардлагатай хүснэгтүүд шалгасан','missing_tables':missing})
+    except SQLAlchemyError as exc:
+        checks.append({'name':'database_connection','status':'fail','detail':type(exc).__name__})
+    sources=source_metrics(db)
+    checks.append({'name':'source_registry','status':'pass' if sources else 'fail','detail':f'{len(sources)} эх сурвалж бүртгэлтэй'})
+    checks.append({'name':'admin_api_key','status':'pass' if bool(settings.admin_api_key) else 'fail','detail':'Тохируулсан' if settings.admin_api_key else 'ADMIN_API_KEY тохируулаагүй'})
+    checks.append({'name':'tender_api_token','status':'configured' if settings.tender_bearer_token else 'blocked','detail':'Токен тохируулсан' if settings.tender_bearer_token else 'TENDER_BEARER_TOKEN шаардлагатай; худалдан авах ажиллагааны байгууллагаас авах'})
+    checks.append({'name':'scheduler_configuration','status':'configured' if __import__('os').environ.get('AUTO_SYNC_SOURCES','[]').strip() not in ('','[]') else 'not_configured','detail':'AUTO_SYNC_SOURCES environment тохиргоог шалгасан; процессын амьд байдлыг батлахгүй'})
+    return {'checked_at':datetime.now(timezone.utc).isoformat(),'overall':'pass' if all(c['status'] in ('pass','configured') for c in checks) else 'needs_attention','checks':checks,'important':'Энэ endpoint нь deployment diagnostics. Эх сурвалжийн бодит таталтыг батлахын тулд source-specific sync/validation endpoint-ийг тус бүр ажиллуулна.'}
+
+@app.post('/api/v1/admin/sources/validate-all',dependencies=[Depends(require_admin)])
+async def validate_all_sources(db:Session=Depends(get_db)):
+    """Smoke-test registered public portal URLs independently and persist each attempt."""
+    from datetime import datetime,timezone
+    results=[]
+    registered=list(db.scalars(select(SourceRegistry).order_by(SourceRegistry.code)).all())
+    for source in registered:
+        if source.access_method=='bearer_api':
+            status='blocked' if not settings.tender_bearer_token else 'manual_api_test_required'
+            results.append({'source_code':source.code,'url':source.url,'status':status,'detail':'Тендерийн REST API-г bearer token-той /admin/sync/tenders endpoint-ээр тусад нь туршина.'})
+            continue
+        run=SourceSyncRun(source_code=source.code,source_url=source.url,status='running')
+        db.add(run);db.commit();db.refresh(run)
+        try:
+            validate_public_url(source.url)
+            fmt,rows,meta=await fetch_registered_public_resource(source.url,max_bytes=5_000_000,max_rows=3)
+            run.status='success';run.records_seen=len(rows);run.records_saved=0
+            run.bytes_downloaded=meta['bytes_downloaded'];run.content_type=meta['content_type'];run.content_sha256=meta['sha256'];run.finished_at=datetime.now(timezone.utc)
+            source.last_success_at=run.finished_at;source.last_error=None
+            results.append({'source_code':source.code,'url':meta['final_url'],'status':'success','format':fmt,'sample_records':len(rows),'bytes_downloaded':meta['bytes_downloaded'],'content_sha256':meta['sha256'],'detail':'Зөвхөн холболт ба parser-ийн smoke test; өгөгдлийг үндсэн санд импортлоогүй.'})
+            db.commit()
+        except (ConnectorError,Exception) as exc:
+            db.rollback()
+            failed=db.get(SourceSyncRun,run.id)
+            current=db.get(SourceRegistry,source.id)
+            if failed:
+                failed.status='failed';failed.error_message=(str(exc) or type(exc).__name__)[:2000];failed.finished_at=datetime.now(timezone.utc)
+            if current:current.last_error=(str(exc) or type(exc).__name__)[:2000]
+            db.commit()
+            results.append({'source_code':source.code,'url':source.url,'status':'failed','detail':(str(exc) or type(exc).__name__)[:500]})
+    return {'checked_at':datetime.now(timezone.utc).isoformat(),'checked_sources':len(results),'success':sum(1 for r in results if r['status']=='success'),'failed':sum(1 for r in results if r['status']=='failed'),'blocked_or_manual':sum(1 for r in results if r['status'] not in ('success','failed')),'results':results,'note':'Эх сурвалж бүр тусдаа үр дүнтэй. Нэвтрэлт шаардсан эх сурвалжийг тойрч гарахгүй.'}
+
 def stable_record_identity(normalized, row):
     # Keep row identity scoped to a procurement/contract when those fields exist.
     tender = normalized.get("tender_id") or row.get("invitationId") or row.get("invitation_id") or row.get("Тендерийн дугаар")
