@@ -8,6 +8,8 @@ from .config import settings
 from .db import Base, engine, get_db
 from .models import SourceRegistry, SourceRecord, Company, Organization, Tender, Evidence, RiskFinding, ReviewAction, AuditLog, Relationship
 from .services import ingest_tender, evaluate_r01
+from .connectors import connector_catalog, tender_invitations, tender_plans, tender_suppliers, ConnectorError
+from .integrations import upsert_connector_registry, catalog_status, mark_result
 
 SOURCE_SEEDS = [
     ('tender_official','Тендерийн Open Data API','https://opendata.tender.gov.mn/','bearer_api'),
@@ -141,3 +143,64 @@ def review(rid:int, data:ReviewIn,db:Session=Depends(get_db)):
     db.add(AuditLog(actor=data.reviewer,action='risk_review',details={'risk_id':rid,'decision':data.decision}))
     db.commit()
     return {'ok':True,'review_status':r.review_status}
+
+
+@app.get('/api/v1/integrations')
+def integrations(db:Session=Depends(get_db)):
+    upsert_connector_registry(db)
+    return catalog_status(db)
+
+class SyncIn(BaseModel):
+    year: int|None = Field(default=None, ge=2000, le=2100)
+    max_pages: int = Field(default=1, ge=1, le=100)
+    per_page: int = Field(default=100, ge=1, le=100)
+
+class SupplierSyncIn(BaseModel):
+    invitation_id: int = Field(gt=0)
+    per_page: int = Field(default=100, ge=1, le=100)
+
+@app.post('/api/v1/admin/sync/tenders',dependencies=[Depends(require_admin)])
+async def sync_tenders(data:SyncIn,db:Session=Depends(get_db)):
+    imported=0; pages=0; total=0
+    try:
+        for page in range(1,data.max_pages+1):
+            body=await tender_invitations(page,data.per_page,data.year);pages+=1
+            records=body.get('data',[]);total=int(body.get('total') or 0)
+            for item in records:
+                code=str(item.get('tenderCode') or item.get('invitationNumber') or item.get('invitationId') or '').strip()
+                title=str(item.get('tenderName') or '').strip()
+                if not code or not title:continue
+                payload={'external_id':code,'title':title,'source_url':'https://www.tender.gov.mn/','organization_name':item.get('budgetEntityName') or item.get('budgetGovernerName'),'organization_official_id':item.get('registrationNumber') or item.get('budgetEntityCode'),'budget_amount':safe_float(item.get('totalBudget')),'procurement_method':item.get('ruleName') or item.get('tenderTypeName'),'published_at':item.get('publishDate') or item.get('publishedDate')}
+                try:
+                    _,changed=ingest_tender(db,payload);imported+=int(changed)
+                except ValueError:continue
+            db.commit()
+            if not records or len(records)<data.per_page or (total and page*data.per_page>=total):break
+        mark_result(db,'tender_official')
+    except ConnectorError as exc:
+        db.rollback();mark_result(db,'tender_official',str(exc));raise HTTPException(502,str(exc))
+    return {'source':'tender_official','pages_fetched':pages,'records_total_reported':total,'records_imported_or_updated':imported,'year':data.year,'note':'API нь invitation мэдээлэл буцаадаг; supplier endpoint-ийн тоо баталгаажаагүй үед bid_count таамгаар бөглөхгүй.'}
+
+@app.post('/api/v1/admin/sync/tender-plans',dependencies=[Depends(require_admin)])
+async def sync_plans(data:SyncIn,db:Session=Depends(get_db)):
+    pages=0;received=0
+    try:
+        for page in range(1,data.max_pages+1):
+            body=await tender_plans(page,data.per_page,data.year);pages+=1;records=body.get('data',[]);received+=len(records)
+            if not records or len(records)<data.per_page:break
+        mark_result(db,'tender_official')
+    except ConnectorError as exc:
+        mark_result(db,'tender_official',str(exc));raise HTTPException(502,str(exc))
+    return {'source':'tender_official','pages_fetched':pages,'plan_records_received':received,'stored_as_tenders':False,'note':'Төлөвлөгөөний тусдаа хүснэгт хэрэгжтэл зарласан тендертэй андуурч хадгалахгүй.'}
+
+@app.post('/api/v1/admin/check/tender-suppliers',dependencies=[Depends(require_admin)])
+async def check_suppliers(data:SupplierSyncIn):
+    try:
+        body=await tender_suppliers(data.invitation_id,1,data.per_page)
+        return {'source':'tender_official','invitation_id':data.invitation_id,'total':body.get('total'),'sample_count':len(body.get('data',[])),'data':body.get('data',[]),'note':'Нийтэд харуулахын өмнө API эрх болон хувийн мэдээллийн шаардлагыг шалгана.'}
+    except ConnectorError as exc:raise HTTPException(502,str(exc))
+
+def safe_float(value):
+    if value is None or value=='':return None
+    try:return float(str(value).replace(',',''))
+    except (ValueError,TypeError):return None
