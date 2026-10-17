@@ -202,7 +202,9 @@ async def discover_web(data: WebDiscoveryIn, db: Session = Depends(get_db)):
                                      'raw': record['row'], 'normalized': normalize_record(record['row']),
                                      'content_sha256': record['content_sha256']}, source_url=record['url'], source_code=source.code)
                 saved += 1
-            run.status = 'success' if any(p['status'] in ('read', 'limited_html_possible_javascript') for p in result['pages']) else 'failed'
+            run.status = 'success' if any(p['status'] == 'read' for p in result['pages']) else 'failed'
+            source.access_notes = 'Веб таталтын хүрээ: '+result['status']+'; '+', '.join(sorted({p['status'] for p in result['pages']}))
+            if result['status'] != 'bounded_complete': run.error_message = source.access_notes
             run.records_saved = saved; run.records_seen = sum(p.get('rows_read', 0) for p in result['pages'])
             run.finished_at = datetime.now(timezone.utc)
             if run.status == 'failed': run.error_message = result['status']

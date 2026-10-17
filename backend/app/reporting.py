@@ -14,6 +14,10 @@ def build_report(db, q='', registration=''):
         if identity in latest:
             versions += 1
             continue
+        payload = record.raw_payload if isinstance(record.raw_payload, dict) else {}
+        raw = payload.get('raw', {})
+        if payload.get('kind') == 'public_web_document' and payload.get('format') == 'html_text' and isinstance(raw, dict) and len(str(raw.get('text', ''))) < 150:
+            continue
         latest[identity] = (record, source)
     matches = []
     counts = {}
@@ -71,7 +75,7 @@ def build_report(db, q='', registration=''):
         coverage.append({'code': source.code, 'name': source.name, 'url': source.url,
                          'imported_records': count, 'matched_records': counts.get(source.code, 0),
                          'last_success_at': source.last_success_at,
-                         'status': 'has_imported_data' if count else 'no_imported_data'})
+                         'status': 'has_imported_data' if count else 'no_imported_data', 'crawl_note': source.access_notes or None})
     active_signals = [s for s in signals if s['review_status'] not in ('rejected', 'dismissed')]
     conclusions = [f'{len(matches)} эх баримт {len(counts)} эх сурвалжаас хайлтын нөхцөлд таарсан.',
                    f'Албан регистр эсвэл эх баримтын ID холбоосоор {len(tenders)} тендер хамрагдсан.',

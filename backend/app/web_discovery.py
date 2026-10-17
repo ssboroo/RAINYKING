@@ -103,16 +103,17 @@ async def crawl_public_site(start_url, query='', max_pages=5, max_depth=2, clien
                 if pages: await asyncio.sleep(crawl_delay)
                 raw, mime, final_url = await download(client, url, host, allowed)
                 fmt, rows = parse_public_payload(raw, mime, final_url, max_rows=500)
+                limited_html = fmt == 'html_text' and bool(rows) and len(str(rows[0].get('text', ''))) < 150
                 matched = []
                 for index, row in enumerate(rows):
                     text = json.dumps(row, ensure_ascii=False, default=str).casefold()
-                    if all(token in text for token in tokens):
+                    if not limited_html and all(token in text for token in tokens):
                         matched.append((index, row))
                 for index, row in matched:
                     records.append({'url': final_url, 'format': fmt, 'row_index': index,
                                     'row': row, 'content_sha256': hashlib.sha256(raw).hexdigest()})
                 status = 'read' if rows else ('needs_ocr' if fmt == 'pdf' else 'empty')
-                if fmt == 'html_text' and rows and len(str(rows[0].get('text', ''))) < 150:
+                if limited_html:
                     status = 'limited_html_possible_javascript'
                 pages.append({'url': final_url, 'status': status, 'format': fmt,
                               'rows_read': len(rows), 'matched_rows': len(matched), 'bytes': len(raw)})

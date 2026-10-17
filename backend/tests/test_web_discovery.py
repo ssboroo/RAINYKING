@@ -50,3 +50,15 @@ def test_robots_failure_is_reported_as_not_searched():
 def test_no_guessed_post_search_or_external_links():
     html = b'<form method="post" action="/search"><input name="q"></form><a href="javascript:alert(1)">x</a><a href="https://opendata.gov.mn:1234/">port</a>'
     assert discover_links(html, HOST+'/', 'opendata.gov.mn', 'test') == []
+
+
+def test_javascript_placeholder_is_not_imported_as_evidence():
+    def handler(request):
+        if request.url.path == '/robots.txt': return httpx.Response(404)
+        return httpx.Response(200, headers={'content-type':'text/html'}, text='<html><title>Portal</title><div id="app"></div><script src="app.js"></script></html>')
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await crawl_public_site(HOST+'/', client=client, delay=0)
+    result = asyncio.run(run())
+    assert result['records'] == []
+    assert result['pages'][0]['status'] == 'limited_html_possible_javascript'
