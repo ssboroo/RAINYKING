@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from .config import settings
 from .db import Base, engine, get_db
 from .models import SourceRegistry, SourceRecord, Company, Organization, Tender, TenderPlan, TenderSupplier, Evidence, RiskFinding, ReviewAction, AuditLog, Relationship, SourceSyncRun
-from .services import ingest_tender, evaluate_r01
+from .services import ingest_tender, evaluate_r01, evaluate_risk_signals
 from .connectors import connector_catalog, tender_invitations, tender_plans, tender_suppliers, ckan_package_search, ckan_package_show, fetch_public_resource, inspect_public_source, fetch_registered_public_resource, validate_public_url, ConnectorError
 from .integrations import upsert_connector_registry, catalog_status, mark_result
 from .normalization import normalize_record
@@ -261,9 +261,9 @@ def import_tender(data:TenderIn,db:Session=Depends(get_db)):
 
 @app.post('/api/v1/admin/evaluate',dependencies=[Depends(require_admin)])
 def evaluate(db:Session=Depends(get_db)):
-    count=evaluate_r01(db)
+    counts=evaluate_risk_signals(db)
     db.commit()
-    return {'new_findings':count,'implemented_rules':['R01'],'status':'review_required'}
+    return {'new_findings':sum(counts.values()),'by_rule':counts,'implemented_rules':['R01','R02','R03'],'status':'review_required','note':'Эдгээр нь шалгах дохио; гэм буруугийн дүгнэлт биш.'}
 
 @app.post('/api/v1/reviews/{rid}',dependencies=[Depends(require_admin)])
 def review(rid:int, data:ReviewIn,db:Session=Depends(get_db)):

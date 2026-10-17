@@ -44,3 +44,10 @@ from app.main import normalized_entity_name
 
 def test_investigation_search_normalization_is_stable_for_mongolian_names():
     assert normalized_entity_name("  ТӨРИЙН   ӨМЧИТ ХХК ") == normalized_entity_name("төрийн өмчит ххк")
+
+from app.services import evaluate_risk_signals
+
+def test_risk_engine_exposes_rule_catalog_and_review_only_semantics():
+    assert callable(evaluate_risk_signals)
+    import inspect
+    assert "never label a subject corrupt" in inspect.getdoc(evaluate_risk_signals)
