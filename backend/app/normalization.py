@@ -15,10 +15,10 @@ ALIASES={
 def clean(value):
  if value is None:return None
  value=unicodedata.normalize("NFKC",str(value))
- value=re.sub(r"[\\u00a0\\t\\r\\n]+"," ",value)
- value=re.sub(r"\\s+"," ",value).strip()
+ value=re.sub(r"[\u00a0\t\r\\n]+"," ",value)
+ value=re.sub(r"\s+"," ",value).strip()
  return value or None
-def key(value):return re.sub(r"\\s+"," ",(clean(value) or "").casefold().replace("_"," ").replace("-"," "))
+def key(value):return re.sub(r"\s+"," ",(clean(value) or "").casefold().replace("_"," ").replace("-"," "))
 def normalize_record(row):
  mapped={key(k):v for k,v in row.items()}; out={"raw":row}
  for field,aliases in ALIASES.items():
@@ -32,7 +32,7 @@ def normalize_record(row):
    value=clean(found)
    if field=="budget":
     try:
-     n=Decimal(re.sub(r"[^0-9.\\-]","",value.replace(",","").replace("₮","")))
+     n=Decimal(re.sub(r"[^0-9.\-]","",value.replace(",","").replace("₮","")))
      value=float(n) if n.is_finite() and n>=0 else None
     except (InvalidOperation,ValueError):value=None
    elif field=="date":
@@ -42,5 +42,5 @@ def normalize_record(row):
       try:value=datetime.strptime(value,fmt).date().isoformat();break
       except ValueError:pass
    out[field]=value
- if out.get("registration"):out["registration"]=re.sub(r"\\s+","",out["registration"]).upper()
+ if out.get("registration"):out["registration"]=re.sub(r"\s+","",out["registration"]).upper()
  return out
