@@ -2,7 +2,7 @@
 from datetime import datetime, timezone
 from sqlalchemy import select
 from .models import SourceRecord, SourceRegistry, Tender, Company, Organization, RiskFinding, Evidence
-from .record_search import matches_record
+from .record_search import matches_record, record_title
 
 
 def build_report(db, q='', registration=''):
@@ -34,7 +34,7 @@ def build_report(db, q='', registration=''):
             registrations.add(''.join(value.split()).upper())
         for name in found['fields']['owner_name']:
             owners.append({'name': name, 'source_record_id': record.id, 'source_url': record.source_url, 'status': 'source_claim'})
-        matches.append({'id': record.id, 'external_id': record.external_id, 'source_code': source.code,
+        matches.append({'id': record.id, 'title': record_title(record.raw_payload, f'Эх баримт #{record.id}'), 'external_id': record.external_id, 'source_code': source.code,
                         'source_name': source.name, 'source_url': record.source_url, 'sha256': record.sha256,
                         'fetched_at': record.fetched_at, 'fields': found['fields'], 'matched_fields': found['matched_fields']})
     # SQL types are evaluated through exact foreign keys, not name similarity.

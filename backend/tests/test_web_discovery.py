@@ -88,3 +88,16 @@ def test_dynamic_page_uses_renderer_and_keeps_extraction_provenance(monkeypatch)
     result = asyncio.run(run())
     assert result['records'][0]['row']['company_name'] == 'Dynamic company'
     assert result['records'][0]['extraction_method'] == 'browser'
+
+
+def test_html_parser_skips_empty_filter_row_before_real_headers():
+    from app.connectors import parse_public_payload
+    html='<html><table><tr><td><input type="search"></td></tr><tr><th>No</th><th>Маягтын нэр</th></tr><tr><td>1</td><td>Батлагдсан төсөв</td></tr></table></html>'.encode()
+    fmt, rows = parse_public_payload(html, 'text/html', HOST+'/')
+    assert fmt == 'html_table'
+    assert rows == [{'table_index':1, 'No':'1', 'Маягтын нэр':'Батлагдсан төсөв'}]
+
+
+def test_public_record_title_uses_content_not_hash_identifier():
+    from app.record_search import record_title
+    assert record_title({'raw':{'table_index':1, 'column_1':'1', 'column_2':'Батлагдсан төсөв'}}) == 'Батлагдсан төсөв'

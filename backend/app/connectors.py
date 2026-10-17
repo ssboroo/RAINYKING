@@ -131,8 +131,11 @@ def parse_public_payload(raw: bytes, content_type: str, url: str, max_rows: int=
         for ti,table in enumerate(soup.find_all("table")[:20],1):
             trs=table.find_all("tr")
             if not trs: continue
-            headers=[c.get_text(" ",strip=True) or "column_"+str(i+1) for i,c in enumerate(trs[0].find_all(["th","td"]))]
-            for tr in trs[1:]:
+            header_index = next((i for i,tr in enumerate(trs) if any(c.get_text(" ",strip=True) for c in tr.find_all("th"))), None)
+            if header_index is None:
+                header_index = next((i for i,tr in enumerate(trs) if any(c.get_text(" ",strip=True) for c in tr.find_all(["th","td"]))), 0)
+            headers=[c.get_text(" ",strip=True) or "column_"+str(i+1) for i,c in enumerate(trs[header_index].find_all(["th","td"]))]
+            for tr in trs[header_index+1:]:
                 cells=[c.get_text(" ",strip=True) for c in tr.find_all(["th","td"])]
                 if cells: rows.append({"table_index":ti,**{headers[i] if i<len(headers) else "column_"+str(i+1):v for i,v in enumerate(cells)}})
                 if len(rows)>=max_rows: break

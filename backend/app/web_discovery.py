@@ -143,6 +143,6 @@ async def crawl_public_site(start_url, query='', max_pages=5, max_depth=2, clien
                 pages.append({'url': url, 'status': 'failed', 'error': type(exc).__name__})
         return {'status': 'partial' if queue or any(p['status'] != 'read' for p in pages) else 'bounded_complete',
                 'pages': pages, 'records': records, 'queued_remaining': len(queue),
-                'note': 'Хязгаартай нийтийн crawl; бүх сайтыг бүрэн шалгасан гэсэн үг биш. PDF зураг/OCR болон JavaScript дүрслэл тусдаа adapter шаарддаг.'}
+                'note': 'Хязгаартай нийтийн crawl; бүх сайтыг бүрэн шалгасан гэсэн үг биш. Дүрслэл/OCR-ийн хэрэглэсэн арга, саатлыг хуудас бүрээс шалгана.'}
     finally:
         if own_client: await client.aclose()

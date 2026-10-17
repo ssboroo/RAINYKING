@@ -238,7 +238,7 @@ def record_search(
     limit: int = Query(default=30, ge=1, le=100),
     db: Session = Depends(get_db),
 ):
-    from .record_search import matches_record
+    from .record_search import matches_record, record_title
     query = select(SourceRecord, SourceRegistry).join(SourceRegistry, SourceRecord.source_id == SourceRegistry.id)
     if source_code.strip(): query = query.where(SourceRegistry.code == source_code.strip())
     items = []; total = 0; scanned = 0
@@ -250,7 +250,7 @@ def record_search(
         if match is None: continue
         if offset <= total < offset + limit:
             items.append({'id': record.id, 'external_id': record.external_id,
-                          'source_code': source.code, 'source_name': source.name,
+                          'source_code': source.code, 'source_name': source.name, 'title': record_title(record.raw_payload, f'Эх баримт #{record.id}'),
                           'source_url': record.source_url, 'sha256': record.sha256,
                           'fetched_at': record.fetched_at, **match,
                           'match_status': 'source_claim_requires_review'})
@@ -390,13 +390,14 @@ def investigation_entity_graph(entity_type:str,entity_id:int,depth:int=Query(def
             obj=db.get(SourceRecord,i)
             if obj:
                 source=db.get(SourceRegistry,obj.source_id)
-                label=(source.name if source else 'Эх баримт')+' · '+obj.external_id
+                from .record_search import record_title
+                label=record_title(obj.raw_payload, (source.name if source else 'Эх баримт')+' #'+str(obj.id))
                 detail={'external_id':obj.external_id,'fetched_at':obj.fetched_at.isoformat() if obj.fetched_at else None}
                 source_id=obj.id
         if not obj: return None
         rec=db.get(SourceRecord,source_id) if source_id else None
         return {'key':f'{t}:{i}','type':t,'id':i,'label':label,'details':detail,'source_record_id':source_id,'source_url':rec.source_url if rec else None,'sha256':rec.sha256 if rec else None}
-    from .record_search import record_fields
+    from .record_search import record_fields, record_title
     start=node(entity_type,entity_id)
     if not start: raise HTTPException(404,'Entity not found')
     nodes={start['key']:start}; edges=[]; frontier=[(entity_type,entity_id,0)]; seen={(entity_type,entity_id)}
