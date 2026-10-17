@@ -4,7 +4,7 @@ from difflib import SequenceMatcher
 from fastapi import FastAPI, Depends, HTTPException, Header, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from sqlalchemy import select, or_, func, cast
+from sqlalchemy import select, or_, func, cast, Text
 from sqlalchemy.orm import Session
 from .config import settings
 from .db import Base, engine, get_db
