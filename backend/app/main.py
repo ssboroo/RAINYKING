@@ -193,15 +193,18 @@ async def discover_web(data: WebDiscoveryIn, db: Session = Depends(get_db)):
         run = SourceSyncRun(source_code=source.code, source_url=source.url, status='running')
         db.add(run); db.commit(); db.refresh(run)
         try:
-            result = await crawl_public_site(source.url, data.q, data.max_pages, data.max_depth)
+            start_url = next((item['docs'] for item in connector_catalog() if item['code'] == source.code), source.url)
+            result = await crawl_public_site(start_url, data.q, data.max_pages, data.max_depth)
             saved = 0
             for record in result.pop('records'):
                 identity = hashlib.sha256((record['url']+'#'+str(record['row_index'])).encode()).hexdigest()
                 store_source_payload(db, 'web:'+identity, {'kind': 'public_web_document', 'format': record['format'],
                                      'raw': record['row'], 'normalized': normalize_record(record['row']),
-                                     'content_sha256': record['content_sha256']}, source_url=record['url'], source_code=source.code)
+                                     'content_sha256': record['content_sha256'], 'extraction_method': record.get('extraction_method', 'http')}, source_url=record['url'], source_code=source.code)
                 saved += 1
-            run.status = 'success' if any(p['status'] in ('read', 'limited_html_possible_javascript') for p in result['pages']) else 'failed'
+            run.status = 'success' if any(p['status'] == 'read' for p in result['pages']) else 'failed'
+            source.access_notes = 'Веб таталтын хүрээ: '+result['status']+'; '+', '.join(sorted({p['status'] for p in result['pages']}))
+            if result['status'] != 'bounded_complete': run.error_message = source.access_notes
             run.records_saved = saved; run.records_seen = sum(p.get('rows_read', 0) for p in result['pages'])
             run.finished_at = datetime.now(timezone.utc)
             if run.status == 'failed': run.error_message = result['status']
@@ -235,7 +238,7 @@ def record_search(
     limit: int = Query(default=30, ge=1, le=100),
     db: Session = Depends(get_db),
 ):
-    from .record_search import matches_record
+    from .record_search import matches_record, record_title
     query = select(SourceRecord, SourceRegistry).join(SourceRegistry, SourceRecord.source_id == SourceRegistry.id)
     if source_code.strip(): query = query.where(SourceRegistry.code == source_code.strip())
     items = []; total = 0; scanned = 0
@@ -247,7 +250,7 @@ def record_search(
         if match is None: continue
         if offset <= total < offset + limit:
             items.append({'id': record.id, 'external_id': record.external_id,
-                          'source_code': source.code, 'source_name': source.name,
+                          'source_code': source.code, 'source_name': source.name, 'title': record_title(record.raw_payload, f'Эх баримт #{record.id}'),
                           'source_url': record.source_url, 'sha256': record.sha256,
                           'fetched_at': record.fetched_at, **match,
                           'match_status': 'source_claim_requires_review'})
@@ -387,13 +390,14 @@ def investigation_entity_graph(entity_type:str,entity_id:int,depth:int=Query(def
             obj=db.get(SourceRecord,i)
             if obj:
                 source=db.get(SourceRegistry,obj.source_id)
-                label=(source.name if source else 'Эх баримт')+' · '+obj.external_id
+                from .record_search import record_title
+                label=record_title(obj.raw_payload, (source.name if source else 'Эх баримт')+' #'+str(obj.id))
                 detail={'external_id':obj.external_id,'fetched_at':obj.fetched_at.isoformat() if obj.fetched_at else None}
                 source_id=obj.id
         if not obj: return None
         rec=db.get(SourceRecord,source_id) if source_id else None
         return {'key':f'{t}:{i}','type':t,'id':i,'label':label,'details':detail,'source_record_id':source_id,'source_url':rec.source_url if rec else None,'sha256':rec.sha256 if rec else None}
-    from .record_search import record_fields
+    from .record_search import record_fields, record_title
     start=node(entity_type,entity_id)
     if not start: raise HTTPException(404,'Entity not found')
     nodes={start['key']:start}; edges=[]; frontier=[(entity_type,entity_id,0)]; seen={(entity_type,entity_id)}

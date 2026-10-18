@@ -50,3 +50,54 @@ def test_robots_failure_is_reported_as_not_searched():
 def test_no_guessed_post_search_or_external_links():
     html = b'<form method="post" action="/search"><input name="q"></form><a href="javascript:alert(1)">x</a><a href="https://opendata.gov.mn:1234/">port</a>'
     assert discover_links(html, HOST+'/', 'opendata.gov.mn', 'test') == []
+
+
+def test_javascript_placeholder_is_not_imported_as_evidence():
+    def handler(request):
+        if request.url.path == '/robots.txt': return httpx.Response(404)
+        return httpx.Response(200, headers={'content-type':'text/html'}, text='<html><title>Portal</title><div id="app"></div><script src="app.js"></script></html>')
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await crawl_public_site(HOST+'/', client=client, delay=0)
+    result = asyncio.run(run())
+    assert result['records'] == []
+    assert result['pages'][0]['status'] == 'limited_html_possible_javascript'
+
+
+def test_browser_scope_rejects_external_private_ports_and_credentials():
+    from app.document_extraction import same_public_source
+    assert same_public_source('https://api.shilendans.gov.mn/data', 'shilendans.gov.mn')
+    assert not same_public_source('https://shilendans.gov.mn.evil.test/', 'shilendans.gov.mn')
+    assert not same_public_source('http://shilendans.gov.mn/', 'shilendans.gov.mn')
+    assert not same_public_source('https://shilendans.gov.mn:8080/', 'shilendans.gov.mn')
+    assert not same_public_source('https://user:password@shilendans.gov.mn/', 'shilendans.gov.mn')
+
+
+def test_dynamic_page_uses_renderer_and_keeps_extraction_provenance(monkeypatch):
+    from app import document_extraction
+    async def render(url, host, allowed):
+        assert allowed(url)
+        return '<html><table><tr><th>company_name</th></tr><tr><td>Dynamic company</td></tr></table></html>'.encode(), url
+    monkeypatch.setattr(document_extraction, 'render_public_page', render)
+    def handler(request):
+        if request.url.path == '/robots.txt': return httpx.Response(404)
+        return httpx.Response(200, headers={'content-type':'text/html'}, text='<html><div id="app"></div></html>')
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await crawl_public_site(HOST+'/', 'Dynamic', client=client, delay=0)
+    result = asyncio.run(run())
+    assert result['records'][0]['row']['company_name'] == 'Dynamic company'
+    assert result['records'][0]['extraction_method'] == 'browser'
+
+
+def test_html_parser_skips_empty_filter_row_before_real_headers():
+    from app.connectors import parse_public_payload
+    html='<html><table><tr><td><input type="search"></td></tr><tr><th>No</th><th>Маягтын нэр</th></tr><tr><td>1</td><td>Батлагдсан төсөв</td></tr></table></html>'.encode()
+    fmt, rows = parse_public_payload(html, 'text/html', HOST+'/')
+    assert fmt == 'html_table'
+    assert rows == [{'table_index':1, 'No':'1', 'Маягтын нэр':'Батлагдсан төсөв'}]
+
+
+def test_public_record_title_uses_content_not_hash_identifier():
+    from app.record_search import record_title
+    assert record_title({'raw':{'table_index':1, 'column_1':'1', 'column_2':'Батлагдсан төсөв'}}) == 'Батлагдсан төсөв'

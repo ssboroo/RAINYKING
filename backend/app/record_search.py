@@ -69,3 +69,16 @@ def matches_record(payload, *, q='', registration='', company_name='', organizat
     if tokens and not all(any(token in folded(v['value']) for v in values) for token in tokens):
         return None
     return {'fields': fields, 'matched_fields': [v for v in values if not tokens or any(t in folded(v['value']) for t in tokens)][:20]}
+
+
+def record_title(payload, fallback='Эх баримт'):
+    if not isinstance(payload, dict): return fallback
+    normalized = payload.get('normalized') if isinstance(payload.get('normalized'), dict) else {}
+    raw = payload.get('raw') if isinstance(payload.get('raw'), dict) else payload
+    for field in ('title', 'name', 'company_name', 'organization_name'):
+        value = normalized.get(field) or raw.get(field)
+        if isinstance(value, str) and value.strip(): return value.strip()[:180]
+    for label, value in raw.items():
+        if label in ('text', 'table_index', 'page_number', 'sha256', 'content_sha256'): continue
+        if isinstance(value, str) and len(value.strip()) >= 4: return value.strip()[:180]
+    return fallback
