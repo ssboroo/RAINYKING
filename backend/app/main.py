@@ -174,6 +174,7 @@ def tenders(limit:int=Query(default=30,ge=1,le=100),db:Session=Depends(get_db)):
 class WebDiscoveryIn(BaseModel):
     source_codes: list[str] = Field(min_length=1, max_length=12)
     q: str = Field(default='', max_length=200)
+    start_urls: dict[str, str] = Field(default_factory=dict, max_length=12)
     max_pages: int = Field(default=5, ge=1, le=10)
     max_depth: int = Field(default=2, ge=0, le=3)
 
@@ -187,13 +188,18 @@ async def discover_web(data: WebDiscoveryIn, db: Session = Depends(get_db)):
         if source is None: raise HTTPException(404, 'Эх сурвалж бүртгэлгүй: ' + code)
         try: validate_public_url(source.url)
         except ConnectorError as exc: raise HTTPException(422, str(exc))
-        sources.append(source)
+        item = next((item for item in connector_catalog() if item['code'] == code), {})
+        start_url = data.start_urls.get(code) or item.get('public_web_url') or source.url
+        from .web_discovery import in_scope
+        default_url = item.get('public_web_url') or source.url
+        if len(start_url) > 2048 or not in_scope(start_url, validate_public_url(default_url)):
+            raise HTTPException(422, 'Эхлэх URL нь эх сурвалжийн нийтийн домэйнтэй таарах ёстой: ' + code)
+        sources.append((source, start_url))
     results = []
-    for source in sources:
-        run = SourceSyncRun(source_code=source.code, source_url=source.url, status='running')
+    for source, start_url in sources:
+        run = SourceSyncRun(source_code=source.code, source_url=start_url, status='running')
         db.add(run); db.commit(); db.refresh(run)
         try:
-            start_url = next((item['docs'] for item in connector_catalog() if item['code'] == source.code), source.url)
             result = await crawl_public_site(start_url, data.q, data.max_pages, data.max_depth)
             saved = 0
             for record in result.pop('records'):
@@ -208,11 +214,16 @@ async def discover_web(data: WebDiscoveryIn, db: Session = Depends(get_db)):
             run.records_saved = saved; run.records_seen = sum(p.get('rows_read', 0) for p in result['pages'])
             run.finished_at = datetime.now(timezone.utc)
             if run.status == 'failed': run.error_message = result['status']
+            if run.status == 'success':
+                source.last_success_at = run.finished_at; source.last_error = None
+            else:
+                source.last_error = run.error_message
             db.commit()
-            results.append({'source_code': source.code, 'run_id': run.id, 'records_saved': saved, **result})
+            results.append({'source_code': source.code, 'acquisition': 'public_web', 'upstream_key_required': False, 'run_id': run.id, 'records_saved': saved, **result})
         except Exception as exc:
             db.rollback(); run = db.get(SourceSyncRun, run.id)
             run.status = 'failed'; run.finished_at = datetime.now(timezone.utc); run.error_message = type(exc).__name__
+            source.last_error = run.error_message
             db.commit()
             results.append({'source_code': source.code, 'status': 'failed', 'error': type(exc).__name__, 'records_saved': 0})
     return {'sources': results, 'note': 'Импортолсон баримт одоо нэгдсэн хайлт ба тайланд орно. Crawl-ийн хүрээ, саатал, алдааг эх сурвалж тус бүрээр харуулна.'}
