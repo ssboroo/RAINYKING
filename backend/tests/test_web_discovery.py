@@ -101,3 +101,46 @@ def test_html_parser_skips_empty_filter_row_before_real_headers():
 def test_public_record_title_uses_content_not_hash_identifier():
     from app.record_search import record_title
     assert record_title({'raw':{'table_index':1, 'column_1':'1', 'column_2':'Батлагдсан төсөв'}}) == 'Батлагдсан төсөв'
+
+
+def test_all_catalog_sources_have_keyless_public_acquisition():
+    from app.connectors import connector_catalog, validate_public_url
+    for source in connector_catalog():
+        assert source['default_acquisition'] == 'public_web'
+        assert source['upstream_key_required'] is False
+        validate_public_url(source['public_web_url'])
+    tender = next(s for s in connector_catalog() if s['code'] == 'tender_official')
+    assert tender['public_web_url'] == 'https://www.tender.gov.mn/'
+    assert '/api' not in tender['public_web_url']
+
+
+def test_discovery_without_upstream_key_and_rejects_other_source_url(monkeypatch):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+    from fastapi import HTTPException
+    from app.db import Base
+    from app.models import SourceRegistry
+    from app.main import discover_web, WebDiscoveryIn
+    calls = []
+    async def crawl(url, *args):
+        calls.append(url)
+        return {'records': [], 'pages': [{'status': 'read', 'rows_read': 0}], 'status': 'bounded_complete'}
+    monkeypatch.setattr('app.web_discovery.crawl_public_site', crawl)
+    monkeypatch.delenv('TENDER_BEARER_TOKEN', raising=False)
+    engine = create_engine('sqlite://')
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        db.add(SourceRegistry(code='tender_official', name='Tender', url='https://opendata.tender.gov.mn/api', access_method='official_api'))
+        db.commit()
+        result = asyncio.run(discover_web(WebDiscoveryIn(source_codes=['tender_official']), db))
+        assert calls == ['https://www.tender.gov.mn/']
+        assert result['sources'][0]['upstream_key_required'] is False
+        assert db.query(SourceRegistry).first().last_success_at is not None
+        try:
+            asyncio.run(discover_web(WebDiscoveryIn(source_codes=['tender_official'], start_urls={'tender_official': 'https://iaac.mn/'}), db))
+        except HTTPException as exc:
+            assert exc.status_code == 422
+        else:
+            raise AssertionError('Cross-source URL accepted')
+        assert len(calls) == 1
+    engine.dispose()
