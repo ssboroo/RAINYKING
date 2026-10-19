@@ -3,7 +3,7 @@ import asyncio
 import hashlib
 import json
 from collections import deque
-from urllib.parse import urljoin, urlsplit, urlunsplit, urlencode
+from urllib.parse import urljoin, urlsplit, urlunsplit, urlencode, parse_qsl
 from urllib.robotparser import RobotFileParser
 import httpx
 from bs4 import BeautifulSoup
@@ -52,17 +52,19 @@ def discover_links(raw, url, host, query):
         target = canonical_url(urljoin(url, a['href']))
         if in_scope(target, host):
             label = a.get_text(' ', strip=True).casefold()
-            score = sum(token in label for token in query.casefold().split())
+            score = sum(token in (label+' '+target.casefold()) for token in query.casefold().split())
+            if any(word in label for word in ('хайх', 'хайлт', 'search')): score += 10
             if urlsplit(target).path.lower().endswith(('.pdf', '.xlsx', '.csv', '.json')): score += 1
             links.append((score, target))
     # Only use an observed GET search form and its observed query field; never guess endpoint names.
     for form in soup.find_all('form'):
         if str(form.get('method', 'get')).lower() != 'get': continue
-        search = next((tag for tag in form.select('input[name]') if tag.get('type') == 'search' or tag.get('name') in ('q', 'search', 'keyword')), None)
+        search = next((tag for tag in form.select('input[name]') if tag.get('type') == 'search' or tag.get('name', '').casefold() in ('q', 'search', 'keyword', 'query', 'searchword', 'search_word', 'searchvalue') or any(word in (tag.get('placeholder', '')+' '+tag.get('aria-label', '')).casefold() for word in ('хайх', 'хайлт', 'search'))), None)
         if search is None or not query: continue
         target = urljoin(url, form.get('action') or url)
         if not in_scope(target, host): continue
-        params = {tag['name']: tag.get('value', '') for tag in form.select('input[type=hidden][name]')}
+        params = dict(parse_qsl(urlsplit(target).query))
+        params.update({tag['name']: tag.get('value', '') for tag in form.select('input[type=hidden][name]')})
         params[search['name']] = query
         parts = urlsplit(target)
         links.append((100, urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(params), ''))))

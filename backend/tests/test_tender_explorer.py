@@ -205,3 +205,16 @@ def test_crawl_import_requires_admin_and_preserves_source_evidence(client, monke
     result = client.get('/api/v1/unified-report?registration=CRAWL123').json()
     assert result['summary']['records'] == 1
     assert result['records'][0]['source_url'] == 'https://opendata.gov.mn/test.csv'
+
+
+def test_global_search_finds_decoded_mongolian_json_records(client):
+    from app.db import get_db
+    db = next(app.dependency_overrides[get_db]())
+    source = db.query(SourceRegistry).first()
+    db.add(SourceRecord(source_id=source.id,external_id='unicode-json',raw_payload={'raw':{'company_name':'МОНГОЛ ТӨСӨВ ХХК','registration':'MN123'}},sha256='b'*64,source_url='https://example.com/unicode'))
+    db.commit()
+    response=client.get('/api/v1/search',params={'q':'төсөв'})
+    assert response.status_code==200
+    assert any(r['external_id']=='unicode-json' for r in response.json()['source_records'])
+    assert not client.get('/api/v1/search',params={'q':'%'}).json()['source_records']
+    db.close()

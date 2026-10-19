@@ -30,7 +30,7 @@ async def public_dns(host):
         return False
 
 
-async def render_public_page(url, host, allowed):
+async def render_public_page(url, host, allowed, interaction=None):
     if not same_public_source(url, host) or not allowed(url):
         raise ConnectorError('Browser дүрслэл эх сурвалжийн зөвшөөрсөн хүрээнээс гадуур.')
     if os.getenv('ENABLE_BROWSER_EXTRACTION', 'false').lower() != 'true':
@@ -58,7 +58,7 @@ async def render_public_page(url, host, allowed):
                     await route.continue_()
                 await context.route('**/*', route_request)
                 page = await context.new_page()
-                async with asyncio.timeout(40):
+                async with asyncio.timeout(120 if interaction else 40):
                     response = await page.goto(url, wait_until='domcontentloaded', timeout=25000)
                     if response and response.status >= 400:
                         raise ConnectorError('Browser HTTP '+str(response.status))
@@ -71,6 +71,8 @@ async def render_public_page(url, host, allowed):
                     text = (await page.locator('body').inner_text()).casefold()
                     if any(marker in text for marker in ('verify you are human', 'checking your browser', 'captcha', 'нэвтрэх шаардлагатай')):
                         raise ConnectorError('Хандалтын шалгалт эсвэл нэвтрэлт шаардлагатай; автоматаар тойрохгүй.')
+                    if interaction is not None:
+                        return await interaction(page, context)
                     html = (await page.content()).encode('utf-8')
                     if len(html) > 5_000_000:
                         raise ConnectorError('Дүрслэгдсэн HTML 5 MB хязгаараас их.')

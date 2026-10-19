@@ -24,10 +24,10 @@ def build_report(db, q='', registration=''):
     registrations = set()
     owners = []
     record_ids = set()
-    for record, source in latest.values():
-        found = matches_record(record.raw_payload, q=q, registration=registration)
-        if found is None:
-            continue
+    from .dossier import select_subject_records, build_dossier
+    selected = select_subject_records(latest,q,registration)
+    for record, source, basis in selected:
+        found = matches_record(record.raw_payload)
         record_ids.add(record.id)
         counts[source.code] = counts.get(source.code, 0) + 1
         for value in found['fields']['registration']:
@@ -36,7 +36,7 @@ def build_report(db, q='', registration=''):
             owners.append({'name': name, 'source_record_id': record.id, 'source_url': record.source_url, 'status': 'source_claim'})
         matches.append({'id': record.id, 'title': record_title(record.raw_payload, f'Эх баримт #{record.id}'), 'external_id': record.external_id, 'source_code': source.code,
                         'source_name': source.name, 'source_url': record.source_url, 'sha256': record.sha256,
-                        'fetched_at': record.fetched_at, 'fields': found['fields'], 'matched_fields': found['matched_fields']})
+                        'fetched_at': record.fetched_at, 'match_basis': basis, 'fields': found['fields'], 'matched_fields': found['matched_fields']})
     # SQL types are evaluated through exact foreign keys, not name similarity.
     companies = [c for c in db.scalars(select(Company)) if c.registration and ''.join(c.registration.split()).upper() in registrations]
     company_ids = {c.id for c in companies}
@@ -89,6 +89,7 @@ def build_report(db, q='', registration=''):
                         'known_bid_count': len(known_bids), 'single_bid_count': single,
                         'budget_by_currency': budgets, 'review_signals': len(active_signals),
                         'excluded_older_versions': versions},
+            'dossier': build_dossier(db, selected, q, registration, tender_rows),
             'conclusions': conclusions, 'records': matches, 'tenders': tender_rows,
             'owner_mentions': owners, 'signals': active_signals,
             'dismissed_signals': [s for s in signals if s not in active_signals], 'source_coverage': coverage,

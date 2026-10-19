@@ -88,7 +88,7 @@ def store_source_payload(db:Session, external_id:str, payload:dict, source_url:s
 
 @app.get('/api/v1/search')
 def search(q:str=Query(min_length=1,max_length=200),db:Session=Depends(get_db)):
-    term=f'%{q.strip()}%'
+    term='%'+q.strip().replace('\\','\\\\').replace('%','\\%').replace('_','\\_')+'%'
     tenders=[tender_dict(x,db) for x in db.scalars(select(Tender).where(or_(Tender.title.ilike(term),Tender.external_id.ilike(term))).order_by(Tender.id.desc()).limit(30))]
     companies=[{'id':x.id,'name':x.name,'registration':x.registration,'resolution_status':x.resolution_status,'entity_type':'company'} for x in db.scalars(select(Company).where(or_(Company.name.ilike(term),Company.registration.ilike(term))).limit(30))]
     organizations=[{'id':x.id,'name':x.name,'official_id':x.official_id,'entity_type':'organization'} for x in db.scalars(select(Organization).where(or_(Organization.name.ilike(term),Organization.official_id.ilike(term))).limit(30))]
@@ -96,12 +96,20 @@ def search(q:str=Query(min_length=1,max_length=200),db:Session=Depends(get_db)):
     plans=[{'id':x.id,'name':x.title,'external_id':x.external_id,'tender_code':x.tender_code,'tender_year':x.tender_year,'organization_name':x.organization_name,'budget_amount':x.budget_amount,'entity_type':'tender_plan'} for x in db.scalars(select(TenderPlan).where(or_(TenderPlan.title.ilike(term),TenderPlan.external_id.ilike(term),TenderPlan.tender_code.ilike(term),TenderPlan.organization_name.ilike(term))).limit(30))]
     # Search public-source payloads as evidence records; never promote a name-only match into a verified person/company identity.
     source_matches=[]
-    matched_records=db.scalars(select(SourceRecord).where(cast(SourceRecord.raw_payload,Text).ilike(term)).order_by(SourceRecord.fetched_at.desc()).limit(30)).all()
+    from .record_search import matches_record, record_title
+    # JSON text can contain escaped Cyrillic. Search decoded values consistently
+    # with detailed search instead of matching the database serialization.
+    matched_records = db.scalars(select(SourceRecord).order_by(SourceRecord.fetched_at.desc())).yield_per(200)
     for rec in matched_records:
+        match = matches_record(rec.raw_payload, q=q.strip())
+        if match is None:
+            continue
         serialized=json.dumps(rec.raw_payload,ensure_ascii=False,sort_keys=True)
         source=db.get(SourceRegistry,rec.source_id)
         folded=serialized.casefold();needle=q.strip().casefold();position=folded.find(needle)
-        source_matches.append({'id':rec.id,'source_name':source.name if source else rec.source_id,'external_id':rec.external_id,'source_url':rec.source_url,'sha256':rec.sha256,'fetched_at':rec.fetched_at,'match_excerpt':serialized[:420] if len(serialized)<=420 else serialized[max(0,position-150):position+270]})
+        source_matches.append({'id':rec.id,'title':record_title(rec.raw_payload, source.name if source else 'Эх баримт'),'source_name':source.name if source else rec.source_id,'external_id':rec.external_id,'source_url':rec.source_url,'sha256':rec.sha256,'fetched_at':rec.fetched_at,'match_excerpt':serialized[:420] if len(serialized)<=420 else serialized[max(0,position-150):position+270]})
+        if len(source_matches) >= 30:
+            break
     # Approximate name search is a discovery aid only. Never auto-link or auto-merge entities on name similarity.
     name_candidates=[]
     normalized_query=normalized_entity_name(q)
@@ -227,6 +235,23 @@ async def discover_web(data: WebDiscoveryIn, db: Session = Depends(get_db)):
             db.commit()
             results.append({'source_code': source.code, 'status': 'failed', 'error': type(exc).__name__, 'records_saved': 0})
     return {'sources': results, 'note': 'Импортолсон баримт одоо нэгдсэн хайлт ба тайланд орно. Crawl-ийн хүрээ, саатал, алдааг эх сурвалж тус бүрээр харуулна.'}
+
+@app.get('/api/v1/public-web-search')
+async def public_web_search(source_code: str = Query(max_length=80), q: str = Query(min_length=2, max_length=200), db: Session = Depends(get_db)):
+    from .live_search import search_source
+    try:
+        result = await search_source(source_code, q)
+        # Read-through cache for structured source profiles only. Public callers
+        # cannot submit payloads or URLs; these come from the fixed source adapter.
+        if source_code == 'shilendans':
+            from .profile_cache import cache_profiles
+            result['records_saved'] = cache_profiles(db, result.get('records', []))
+        from .search_observations import record_observation
+        record_observation(db, q, result)
+        return result
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
+
 
 @app.get('/api/v1/unified-report')
 def unified_report(q: str = Query(default='', max_length=200),
