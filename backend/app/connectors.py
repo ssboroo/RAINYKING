@@ -178,7 +178,7 @@ async def tender_suppliers(invitation_id:int, page:int=1, per_page:int=100)->dic
     return await tender_post(f"/invitation/{invitation_id}/suppliers",{"current_page":page,"per_page":per_page})
 def connector_catalog():
     items = [
-      {"code":"tender_official","name":"Төрийн худалдан авах ажиллагааны REST API","kind":"official_api","docs":"https://opendata.tender.gov.mn/","base_url":TENDER_API,"auth":"Bearer token from procurement authority","automated":True,"required_secret":"TENDER_BEARER_TOKEN","datasets":["invitation","plan","suppliers","committee"],"note":"Токен шаардлагатай; committee endpoint нь хувь хүний мэдээлэл агуулж болох тул тусгай зөвшөөрөлгүйгээр импортлохгүй."},
+      {"code":"tender_official","name":"Төрийн худалдан авах ажиллагаа","kind":"official_api","docs":"https://opendata.tender.gov.mn/","base_url":TENDER_API,"auth":"Bearer token from procurement authority","automated":True,"required_secret":"TENDER_BEARER_TOKEN","datasets":["invitation","plan","suppliers","committee"],"note":"Нийтийн порталын HTML таталтад API түлхүүр хэрэггүй. Албан REST API-д токен шаардлагатай; committee endpoint нь хувь хүний мэдээлэл агуулж болох тул тусгай зөвшөөрөлгүйгээр импортлохгүй."},
       {"code":"shilendans","name":"Шилэн данс нээлттэй өгөгдөл","kind":"open_portal","docs":"https://shilendans.gov.mn/openData","base_url":"https://shilendans.gov.mn/openData","auth":"Public portal; machine-readable endpoint/API schema not verified","automated":False,"required_secret":None,"datasets":["budget","budget_execution","investment","expense_transactions","income_transactions","SOE_targets"],"note":"Албан ёсны портал дээр өгөгдлийн маягтууд нийтлэгдсэн. Баталгаатай API endpoint/schema олдоогүй."},
       {"code":"government_opendata","name":"Засгийн газрын нээлттэй өгөгдлийн портал","kind":"unverified_ckan_adapter","docs":"https://opendata.gov.mn/","base_url":GOV_CKAN_API,"auth":"Adapter present; live CKAN endpoint/schema unverified","automated":False,"required_secret":None,"datasets":["dataset_catalog","dataset_resources","public_csv_json_records"],"note":"CKAN adapter код байгаа боловч энэ порталын одоогийн CKAN endpoint баталгаажаагүй. Бодит CSV/JSON download URL-ийг inspect хийсний дараа импортлоно."},
       {"code":"opendata_mn","name":"OpenData.mn","kind":"open_data_catalog","docs":"https://opendata.mn/","base_url":"https://opendata.mn/","auth":"Dataset-specific","automated":False,"required_secret":None,"datasets":["public_datasets"],"note":"Портал REST API боломж дурдсан боловч нийтэд ил API endpoint/schema тодорхой бус."},
@@ -189,7 +189,8 @@ def connector_catalog():
       {"code":"company_registry","name":"Хуулийн этгээдийн улсын бүртгэлийн мэдээлэл","kind":"public_portal","docs":"https://opendata.burtgel.gov.mn/","base_url":"https://opendata.burtgel.gov.mn/","auth":"Dataset-specific; access approval may apply","automated":False,"required_secret":None,"datasets":["legal_entities","registration_identifiers"],"note":"Өмчлөл, эцсийн өмчлөгчийн мэдээлэлд тусгай эрх, хууль ёсны үндэслэл шаардагдаж болно."}
     ]
     for item in items:
+        item["url"] = "https://www.tender.gov.mn/" if item["code"] == "tender_official" else item["docs"]
         item.update(default_acquisition="public_web", upstream_key_required=False,
-                    public_web_url="https://www.tender.gov.mn/" if item["code"] == "tender_official" else item["docs"],
+                    public_web_url=item["url"],
                     acquisition_modes=["html", "browser", "public_files", "pdf_ocr"])
     return items
