@@ -103,3 +103,11 @@ def test_structured_category_identifiers_have_source_record_proof(db):
     assert checks['court']['status']=='source_evidence'
     assert checks['court']['evidence_record_ids']==[record.id]
     assert checks['transactions']['status']=='no_structured_evidence'
+
+
+def test_all_failed_pages_are_unavailable_not_a_clean_negative_search(db):
+    record_observation(db,'Тест',{'source_code':'tender_official','status':'partial','records':[], 'pages':[{'url':'https://www.tender.gov.mn/','status':'failed','error':'HTTPStatusError'}]})
+    data=build_report(db,q='Тест')['dossier']
+    source=next(s for s in data['sources'] if s['code']=='tender_official')
+    assert source['status']=='unavailable'
+    assert source['pages_checked']==1

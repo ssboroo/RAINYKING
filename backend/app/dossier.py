@@ -126,7 +126,7 @@ def build_dossier(db,selected,q,registration,tenders):
         if obs is None:status='not_searched'
         elif obs.status=='busy':status='busy'
         elif 'robots_denied' in page_states or obs.status=='robots_denied':status='access_restricted'
-        elif obs.status in ('failed','timeout','robots_unavailable'):status='unavailable'
+        elif obs.status in ('failed','timeout','robots_unavailable') or (obs.pages and not any(p.get('status')=='read' for p in obs.pages)):status='unavailable'
         elif linked:status='id_evidence_found'
         elif obs.matches:status='text_matches_only'
         else:status='no_match_in_scope'
