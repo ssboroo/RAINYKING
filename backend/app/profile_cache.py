@@ -1,6 +1,7 @@
 """Persist only structured profiles returned by the fixed public-source adapter."""
 import hashlib
 import json
+import re
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
 from sqlalchemy import select
@@ -17,7 +18,8 @@ def cache_profiles(db, records):
         url=urlsplit(item.get('url',''))
         row=item.get('row',{})
         if (url.scheme!='https' or url.hostname!='shilendans.gov.mn' or not url.path.startswith('/organization/')
-                or item.get('format')!='organization_profile' or not row.get('organization_name')):
+                or item.get('format')!='organization_profile' or not row.get('organization_name')
+                or not re.fullmatch(r'\d{7,12}',str(row.get('registration','')))):
             continue
         payload={'kind':'public_source_record','format':'organization_profile','raw':row,
                  'normalized':normalize_record(row),'content_sha256':item['content_sha256'],

@@ -53,3 +53,14 @@ def test_live_shilendans_uses_search_adapter_not_homepage(monkeypatch):
     assert result['status']=='bounded_complete'
     assert calls==['Эрдэнэт үйлдвэр']
     live_search._CACHE.clear()
+
+
+def test_unloaded_modal_labels_are_never_used_as_registration():
+    data=profile_fields('Эрдэнэт үйлдвэр','https://shilendans.gov.mn/organization/38753',
+       {'Байгууллагын регистрийн дугаар':'','Толгой байгууллага':'','Байгууллагын төрөл':''},[])
+    assert 'registration' not in data
+    data=profile_fields('Эрдэнэт үйлдвэр','https://shilendans.gov.mn/organization/38753',
+       'Байгууллагын регистрийн дугаар:\nАнх үүсгэн байгуулагдсан огноо:',[])
+    assert 'registration' not in data
+    from app.record_search import matches_record
+    assert matches_record({'format':'organization_profile','raw':{'organization_name':'Эрдэнэт','registration':'Анх'}},q='Эрдэнэт') is None

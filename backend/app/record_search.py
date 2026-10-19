@@ -56,6 +56,10 @@ def record_fields(payload):
 
 
 def matches_record(payload, *, q='', registration='', company_name='', organization_name='', owner_name=''):
+    if isinstance(payload, dict) and payload.get('format') == 'organization_profile':
+        raw = payload.get('raw', {})
+        if not isinstance(raw, dict) or not re.fullmatch(r'\d{7,12}',str(raw.get('registration',''))):
+            return None
     fields, values = record_fields(payload)
     if registration:
         target = ''.join(registration.split()).casefold()

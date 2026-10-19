@@ -21,9 +21,15 @@ def profile_fields(name, url, details, reports):
         ('Байгууллагын төрөл', 'organization_type', r'[^\n]+'),
         ('Төрд ногдох хувь хөрөнгө', 'state_share_percent', r'\d+(?:[.,]\d+)?'),
     ]:
-        match = re.search(re.escape(label)+r'\s*:\s*('+pattern+')', details)
-        if match:
-            fields[field] = match.group(1).strip()[:300]
+        if isinstance(details, dict):
+            value = str(details.get(label, '')).strip()
+        else:
+            match = re.search(re.escape(label)+r'[^\S\n]*:[^\S\n]*(?:\n)?[^\S\n]*('+pattern+')', details)
+            value = match.group(1).strip() if match else ''
+        if value and not value.endswith(':'):
+            fields[field] = value[:300]
+    if not re.fullmatch(r'\d{7,12}', fields.get('registration','')):
+        fields.pop('registration', None)
     return fields
 
 
@@ -81,11 +87,17 @@ async def search_organizations(query, limit=3):
                 await detail.get_by_role('button',name='Дэлгэрэнгүй мэдээлэл',exact=True).click(timeout=15000)
                 panel = detail.locator('[id$="panel-OrganzationInfo"]')
                 await panel.wait_for(timeout=15000)
-                await detail.wait_for_function("document.querySelector('[id$=\"panel-OrganzationInfo\"]')?.innerText.includes('Байгууллагын регистрийн дугаар')",timeout=10000)
-                details = await panel.inner_text()
+                await detail.wait_for_function("""() => {
+                  const panel=document.querySelector('[id$="panel-OrganzationInfo"]');
+                  const label=[...(panel?.querySelectorAll('[class*=style_question]')||[])].find(e=>e.textContent.trim()==='Байгууллагын регистрийн дугаар:');
+                  return /^\\d{7,12}$/.test(label?.nextElementSibling?.textContent.trim()||'');
+                }""",timeout=20000)
+                details = await panel.evaluate("""el => Object.fromEntries([...el.querySelectorAll('[class*=style_question]')].map(e=>[e.textContent.trim().replace(/:$/, ''), e.nextElementSibling?.innerText.trim()||'']))""")
                 reports = await detail.locator('table tbody tr td:nth-child(2)').all_text_contents()
                 reports = list(dict.fromkeys(t.strip() for t in reports if len(t.strip())>5))[:40]
                 fields=profile_fields(name,detail.url,details,reports)
+                if not fields.get('registration'):
+                    raise ConnectorError('Байгууллагын регистр ачаалагдаагүй.')
                 if query.isdigit() and fields.get('registration') != query:
                     await detail.close()
                     continue
