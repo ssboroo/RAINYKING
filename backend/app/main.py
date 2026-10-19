@@ -237,10 +237,16 @@ async def discover_web(data: WebDiscoveryIn, db: Session = Depends(get_db)):
     return {'sources': results, 'note': 'Импортолсон баримт одоо нэгдсэн хайлт ба тайланд орно. Crawl-ийн хүрээ, саатал, алдааг эх сурвалж тус бүрээр харуулна.'}
 
 @app.get('/api/v1/public-web-search')
-async def public_web_search(source_code: str = Query(max_length=80), q: str = Query(min_length=2, max_length=200)):
+async def public_web_search(source_code: str = Query(max_length=80), q: str = Query(min_length=2, max_length=200), db: Session = Depends(get_db)):
     from .live_search import search_source
     try:
-        return await search_source(source_code, q)
+        result = await search_source(source_code, q)
+        # Read-through cache for structured source profiles only. Public callers
+        # cannot submit payloads or URLs; these come from the fixed source adapter.
+        if source_code == 'shilendans':
+            from .profile_cache import cache_profiles
+            result['records_saved'] = cache_profiles(db, result.get('records', []))
+        return result
     except ValueError as exc:
         raise HTTPException(422, str(exc))
 

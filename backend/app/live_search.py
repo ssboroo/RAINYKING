@@ -33,8 +33,12 @@ async def search_source(code, query):
     async def run():
         async with _LIMIT:
             try:
-                async with asyncio.timeout(70):
-                    result = await crawl_public_site(source['public_web_url'], query, max_pages=3, max_depth=2)
+                async with asyncio.timeout(140 if code == 'shilendans' else 70):
+                    if code == 'shilendans':
+                        from .shilendans_browser import search_organizations
+                        result = await search_organizations(query)
+                    else:
+                        result = await crawl_public_site(source['public_web_url'], query, max_pages=3, max_depth=2)
                 records = []
                 for row in result.pop('records')[:30]:
                     from .record_search import record_title
@@ -49,8 +53,8 @@ async def search_source(code, query):
                           'scope': 'Нийтийн вебийн 3 хүртэл хуудас; бүх санг бүрэн шалгаагүй. Вебийн тааралтыг албан ID холбоос гэж үзэхгүй.'}
             except TimeoutError:
                 output = {'source_code': code, 'source_name': source['name'], 'status': 'timeout', 'records': [], 'pages': [], 'note': 'Эх сурвалжийн хариу удаан байна. Дахин оролдоно уу.'}
-            except Exception:
-                output = {'source_code': code, 'source_name': source['name'], 'status': 'failed', 'records': [], 'pages': [], 'note': 'Нийтийн хуудсыг уншиж чадсангүй.'}
+            except Exception as exc:
+                output = {'source_code': code, 'source_name': source['name'], 'status': 'failed', 'records': [], 'pages': [], 'note': 'Нийтийн хуудсыг уншиж чадсангүй.', 'error': type(exc).__name__}
             _CACHE[key] = (time.monotonic(), deepcopy(output))
             _CACHE.move_to_end(key)
             while len(_CACHE) > 128:
