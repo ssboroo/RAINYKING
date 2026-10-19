@@ -228,6 +228,15 @@ async def discover_web(data: WebDiscoveryIn, db: Session = Depends(get_db)):
             results.append({'source_code': source.code, 'status': 'failed', 'error': type(exc).__name__, 'records_saved': 0})
     return {'sources': results, 'note': 'Импортолсон баримт одоо нэгдсэн хайлт ба тайланд орно. Crawl-ийн хүрээ, саатал, алдааг эх сурвалж тус бүрээр харуулна.'}
 
+@app.get('/api/v1/public-web-search')
+async def public_web_search(source_code: str = Query(max_length=80), q: str = Query(min_length=2, max_length=200)):
+    from .live_search import search_source
+    try:
+        return await search_source(source_code, q)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
+
+
 @app.get('/api/v1/unified-report')
 def unified_report(q: str = Query(default='', max_length=200),
                    registration: str = Query(default='', max_length=100),
