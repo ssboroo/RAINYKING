@@ -1,17 +1,34 @@
 import asyncio
+import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
+from sqlalchemy.pool import StaticPool
+from app.db import Base,get_db
 from fastapi.testclient import TestClient
 from app.main import app
 from app import live_search
 
 
-def test_public_search_needs_no_admin_and_caches_identical_reads(monkeypatch):
+
+@pytest.fixture
+def public_client():
+    engine=create_engine('sqlite://',connect_args={'check_same_thread':False},poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+    def override():
+        with Session(engine) as db:yield db
+    app.dependency_overrides[get_db]=override
+    try:yield TestClient(app)
+    finally:
+        app.dependency_overrides.clear();engine.dispose()
+
+def test_public_search_needs_no_admin_and_caches_identical_reads(monkeypatch,public_client):
     live_search._CACHE.clear()
     calls=[]
     async def crawl(url, query, **limits):
         calls.append((url,query,limits))
         return {'status':'partial','pages':[{'url':url,'status':'read'}], 'records':[{'url':url,'format':'html_table','row_index':0,'row':{'company_name':'Тест ХХК','registration':'AB123'},'extraction_method':'http','content_sha256':'a'*64}]}
     monkeypatch.setattr(live_search,'crawl_public_site',crawl)
-    client=TestClient(app)
+    client=public_client
     a=client.get('/api/v1/public-web-search',params={'source_code':'tender_official','q':'Тест'})
     b=client.get('/api/v1/public-web-search',params={'source_code':'tender_official','q':'Тест'})
     assert a.status_code == 200

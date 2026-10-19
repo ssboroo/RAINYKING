@@ -246,6 +246,8 @@ async def public_web_search(source_code: str = Query(max_length=80), q: str = Qu
         if source_code == 'shilendans':
             from .profile_cache import cache_profiles
             result['records_saved'] = cache_profiles(db, result.get('records', []))
+        from .search_observations import record_observation
+        record_observation(db, q, result)
         return result
     except ValueError as exc:
         raise HTTPException(422, str(exc))

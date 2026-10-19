@@ -155,3 +155,16 @@ class SourceSyncRun(Base):
     error_message: Mapped[str|None] = mapped_column(Text, nullable=True)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     finished_at: Mapped[datetime|None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+class SearchObservation(Base):
+    __tablename__='search_observations'
+    __table_args__=(UniqueConstraint('source_code','query_hash',name='uq_source_query_observation'),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source_code: Mapped[str] = mapped_column(String(90), index=True)
+    query_hash: Mapped[str] = mapped_column(String(64), index=True)
+    status: Mapped[str] = mapped_column(String(40))
+    matches: Mapped[int] = mapped_column(Integer, default=0)
+    records_saved: Mapped[int] = mapped_column(Integer, default=0)
+    pages: Mapped[list] = mapped_column(JSON, default=list)
+    note: Mapped[str] = mapped_column(Text, default='')
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
