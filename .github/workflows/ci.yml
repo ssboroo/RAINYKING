@@ -13,8 +13,14 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -r backend/requirements.txt
-      - run: python -m compileall -q backend/app
-      - run: pytest -q
+      - name: Compile backend
+        run: python -m compileall -q backend/app
+      - name: Lint changed normalization tests
+        run: ruff check backend/tests/test_normalization.py
+      - name: Type-check normalization module
+        run: mypy --ignore-missing-imports backend/app/normalization.py
+      - name: Run backend tests
+        run: pytest -q
         env:
           PYTHONPATH: backend
   frontend:
@@ -27,5 +33,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - run: npm install
-      - run: npm run build
+      - run: npm ci
+      - name: Build and type-check frontend
+        run: npm run build
